@@ -1,3 +1,8 @@
+[![Crates.io](https://img.shields.io/crates/v/mrpc.svg)](https://crates.io/crates/mrpc)
+[![Documentation](https://docs.rs/mrpc/badge.svg)](https://docs.rs/mrpc)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+
 # mrpc
 
 A MessagePack-RPC implementation in Rust.
