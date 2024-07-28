@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
 
     let client = Client::connect_tcp("127.0.0.1:8080", EchoService).await?;
     let result = client
-        .send_request("echo", vec![Value::String("Hello".into())])
+        .send_request("echo", &[Value::String("Hello".into())])
         .await?;
     println!("Result: {:?}", result);
     Ok(())

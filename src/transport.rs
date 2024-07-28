@@ -49,8 +49,8 @@ use crate::{ConnectionHandler, RpcConnection, RpcHandle, RpcService};
 /// ```
 #[async_trait]
 pub trait RpcSender {
-    async fn send_request(&self, method: &str, params: Vec<Value>) -> Result<Value>;
-    async fn send_notification(&self, method: &str, params: Vec<Value>) -> Result<()>;
+    async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value>;
+    async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()>;
 }
 
 /// TCP listener for accepting RPC connections.
@@ -239,11 +239,11 @@ impl<T: RpcService> Client<T> {
 
 #[async_trait]
 impl<T: RpcService> RpcSender for Client<T> {
-    async fn send_request(&self, method: &str, params: Vec<Value>) -> Result<Value> {
+    async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
         self.sender.send_request(method, params).await
     }
 
-    async fn send_notification(&self, method: &str, params: Vec<Value>) -> Result<()> {
+    async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
         self.sender.send_notification(method, params).await
     }
 }

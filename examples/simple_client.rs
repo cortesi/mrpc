@@ -13,7 +13,7 @@ impl RpcService for DummyClientService {}
 async fn main() -> std::result::Result<(), Box<dyn Error>> {
     let client = Client::connect_unix("/tmp/example_socket", DummyClientService).await?;
     let result = client
-        .send_request("echo", vec![Value::String("Hello, RPC Server!".into())])
+        .send_request("echo", &[Value::String("Hello, RPC Server!".into())])
         .await?;
     println!("Received response: {:?}", result);
     Ok(())
