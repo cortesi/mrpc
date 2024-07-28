@@ -10,7 +10,7 @@ A MessagePack-RPC implementation in Rust.
 
 - Asynchronous RPC servers and clients
 - Support for TCP and Unix domain sockets
-- Full MessagePack-RPC spec implementation (requests, responses, notifications)
+- Full msgpack-rpc implementation (requests, responses, notifications)
 - Support for bidirectional communication - both servers and clients can handle incoming RPC messages
 - Built on `tokio` for async I/O
 - Uses `rmpv` for MessagePack serialization

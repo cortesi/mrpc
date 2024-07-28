@@ -3,16 +3,17 @@
 //! Provides implementations for TCP and Unix domain socket transports,
 //! as well as abstractions for RPC servers and clients.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use rmpv::Value;
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{
-    TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{
+        TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
+    },
+    sync::mpsc,
 };
-use tokio::sync::mpsc;
 use tracing::trace;
 
 use crate::error::*;
@@ -188,9 +189,10 @@ impl<T: RpcService> Server<T> {
 }
 
 /// RPC client for connecting to a server over TCP or Unix domain sockets.
+#[derive(Clone, Debug)]
 pub struct Client<T: RpcService> {
     sender: RpcHandle,
-    _handler: tokio::task::JoinHandle<()>,
+    _handler: Arc<tokio::task::JoinHandle<()>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -229,7 +231,7 @@ impl<T: RpcService> Client<T> {
 
         Ok(Self {
             sender: rpc_sender,
-            _handler: handler_task,
+            _handler: Arc::new(handler_task),
             _phantom: std::marker::PhantomData,
         })
     }
