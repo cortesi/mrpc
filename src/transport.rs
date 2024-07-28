@@ -18,6 +18,34 @@ use tracing::trace;
 use crate::error::*;
 use crate::{ConnectionHandler, RpcConnection, RpcHandle, RpcService};
 
+/// The interface for sending RPC requests and notifications.
+///
+/// This trait is implemented by types that can send RPC messages to a remote service.
+/// Users typically don't need to implement this trait directly, as it's provided
+/// by the library's client implementations.
+///
+/// Use this trait when you need to abstract over different RPC sender implementations
+/// or when writing generic code that interacts with RPC services.
+///
+/// Example usage:
+/// ```
+/// use mrpc::{RpcSender, Result};
+/// use rmpv::Value;
+///
+/// async fn greet_user<T: RpcSender>(sender: &T, name: &str) -> Result<String> {
+///     let response = sender.send_request(
+///         "greet".to_string(),
+///         vec![Value::String(name.into())]
+///     ).await?;
+///     
+///     Ok(response.as_str().unwrap_or("").to_string())
+/// }
+///
+/// // Later, with a client:
+/// // let client = Client::connect_tcp("127.0.0.1:8080", MyService).await?;
+/// // let greeting = greet_user(&client, "Alice").await?;
+/// // println!("{}", greeting);
+/// ```
 #[async_trait]
 pub trait RpcSender {
     async fn send_request(&self, method: String, params: Vec<Value>) -> Result<Value>;

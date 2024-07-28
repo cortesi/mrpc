@@ -1,23 +1,3 @@
-[![Crates.io](https://img.shields.io/crates/v/mrpc.svg)](https://crates.io/crates/mrpc)
-[![Documentation](https://docs.rs/mrpc/badge.svg)](https://docs.rs/mrpc)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-# mrpc
-
-A MessagePack-RPC implementation in Rust.
-
-## Features
-
-- Asynchronous RPC servers and clients
-- Support for TCP and Unix domain sockets
-- Full MessagePack-RPC spec implementation (requests, responses, notifications)
-- Support for bidirectional communication - both servers and clients can handle incoming RPC messages
-- Built on `tokio` for async I/O
-- Uses `rmpv` for MessagePack serialization
-
-## Quick Start
-
-```rust
 use mrpc::{Client, Result, RpcHandle, RpcSender, RpcService, Server};
 use rmpv::Value;
 
@@ -54,4 +34,3 @@ async fn main() -> Result<()> {
     println!("Result: {:?}", result);
     Ok(())
 }
-```

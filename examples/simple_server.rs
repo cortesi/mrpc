@@ -29,17 +29,12 @@ impl RpcService for SimpleService {
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn Error>> {
     let socket_path = "/tmp/example_socket";
-
     // Remove the socket file if it already exists
     if std::path::Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path)?;
     }
-
     let server = Server::new(SimpleService).unix(socket_path).await?;
-
     println!("Server listening on {}", socket_path);
-
     server.run().await?;
-
     Ok(())
 }

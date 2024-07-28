@@ -11,18 +11,13 @@ impl RpcService for DummyClientService {}
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn Error>> {
-    // Connect to the server
     let client = Client::connect_unix("/tmp/example_socket", DummyClientService).await?;
-
-    // Send a message
     let result = client
         .send_request(
             "echo".to_string(),
             vec![Value::String("Hello, RPC Server!".into())],
         )
         .await?;
-
     println!("Received response: {:?}", result);
-
     Ok(())
 }

@@ -209,7 +209,43 @@ where
     }
 }
 
-/// Trait for implementing RPC service functionality.
+/// The interface for implementing RPC service functionality.
+///
+/// This trait allows you to create custom RPC services by implementing
+/// methods to handle requests, notifications, and connection events.
+///
+/// Implementations of this trait can be used with the `Server` and `Client`
+/// types to create RPC servers and clients.
+///
+/// Use the `#[async_trait]` attribute from the `async_trait` crate when
+/// implementing this trait to support async methods.
+///
+/// Example implementation:
+/// ```
+/// use mrpc::{Result, RpcHandle, RpcService};
+/// use rmpv::Value;
+///
+/// #[derive(Clone)]
+/// struct MyService;
+///
+/// #[async_trait::async_trait]
+/// impl RpcService for MyService {
+///     async fn handle_request<S>(
+///         &self,
+///         _client: RpcHandle,
+///         method: &str,
+///         params: Vec<Value>,
+///     ) -> Result<Value> {
+///         match method {
+///             "greet" => {
+///                 let name = params[0].as_str().unwrap_or("World");
+///                 Ok(Value::String(format!("Hello, {}!", name).into()))
+///             }
+///             _ => Err(mrpc::RpcError::Protocol(format!("Unknown method: {}", method))),
+///         }
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait RpcService: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an

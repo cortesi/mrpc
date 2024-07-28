@@ -1,9 +1,10 @@
 //! MessagePack-RPC implementation in Rust.
 //!
 //! Provides asynchronous RPC servers and clients over TCP and Unix domain sockets.
-//! Implements the full MessagePack-RPC specification: requests, responses, and notifications.
+//! Implements the full MessagePack-RPC specification.
 //!
-//! Both servers and clients can handle incoming RPC messages, enabling bidirectional communication.
+//! Both servers and clients can handle incoming RPC messages, enabling bidirectional
+//! communication.
 //!
 //! To implement a server:
 //! 1. Implement the `RpcService` trait
@@ -12,11 +13,9 @@
 //! 4. Call `server.run()`
 //!
 //! To implement a client:
-//! 1. Optionally implement `RpcService` to handle incoming messages
+//! 1. Implement the `RpcService` trait (possibly empty)
 //! 2. Create a `Client` via `Client::connect_tcp(addr)` or `Client::connect_unix(path)`
 //! 3. Use `client.send_request()` or `client.send_notification()`
-//!
-//! Uses `tokio` for async I/O and `rmpv` for MessagePack serialization.
 
 mod connection;
 mod error;

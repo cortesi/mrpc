@@ -2,7 +2,7 @@ use rmpv::Value;
 use std::io;
 use thiserror::Error;
 
-/// Represents errors that can occur during RPC operations.
+/// Errors that can occur during RPC operations.
 #[derive(Error, Debug)]
 pub enum RpcError {
     /// Error occurred during I/O operations.
@@ -26,11 +26,12 @@ pub enum RpcError {
     Service(ServiceError),
 }
 
-/// Represents an error that occurred during the execution of an RPC service method.
-/// It consists of a name, which identifies the type of error, and a value, which
-/// can contain additional error details. This error type is used to convey
-/// service-specific errors back to the client. When sent over the RPC protocol,
-/// this error will be serialized into a map with "name" and "value" keys.
+/// An error that occurred during the execution of an RPC service method.
+///
+/// It consists of a name, which identifies the type of error, and a value, which can contain
+/// additional error details. This error type is used to convey service-specific errors back to the
+/// client. When sent over the RPC protocol, this error will be serialized into a map with "name"
+/// and "value" keys.
 #[derive(Error, Debug)]
 pub struct ServiceError {
     pub name: String,
