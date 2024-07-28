@@ -46,11 +46,11 @@ pub struct RpcHandle {
 #[async_trait]
 impl RpcSender for RpcHandle {
     /// Sends an RPC request and waits for the response.
-    async fn send_request(&self, method: String, params: Vec<Value>) -> Result<Value> {
+    async fn send_request(&self, method: &str, params: Vec<Value>) -> Result<Value> {
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender
             .send(ClientMessage::Request {
-                method,
+                method: method.to_string(),
                 params,
                 response_sender,
             })
@@ -62,9 +62,12 @@ impl RpcSender for RpcHandle {
     }
 
     /// Sends an RPC notification without waiting for a response.
-    async fn send_notification(&self, method: String, params: Vec<Value>) -> Result<()> {
+    async fn send_notification(&self, method: &str, params: Vec<Value>) -> Result<()> {
         self.sender
-            .send(ClientMessage::Notification { method, params })
+            .send(ClientMessage::Notification {
+                method: method.to_string(),
+                params,
+            })
             .await
             .map_err(|_| RpcError::Protocol("Failed to send notification".to_string()))
     }

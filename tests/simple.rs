@@ -80,17 +80,14 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test echo request
     let echo_result = client
-        .send_request(
-            "echo".to_string(),
-            vec![Value::String("Hello, RPC!".into())],
-        )
+        .send_request("echo", vec![Value::String("Hello, RPC!".into())])
         .await?;
     assert_eq!(echo_result, Value::String("Hello, RPC!".into()));
 
     // Test add request
     let add_result = client
         .send_request(
-            "add".to_string(),
+            "add",
             vec![Value::Integer(5.into()), Value::Integer(7.into())],
         )
         .await?;
@@ -99,7 +96,7 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
     // Test notification
     client
         .send_notification(
-            "test_notification".to_string(),
+            "test_notification",
             vec![Value::String("Test notification".into())],
         )
         .await?;
@@ -109,12 +106,12 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check notification count
     let count_result = client
-        .send_request("get_notification_count".to_string(), vec![])
+        .send_request("get_notification_count", vec![])
         .await?;
     assert_eq!(count_result, Value::Integer(1.into()));
 
     // Test unknown method
-    let unknown_result = client.send_request("unknown".to_string(), vec![]).await;
+    let unknown_result = client.send_request("unknown", vec![]).await;
     assert!(unknown_result.is_err());
 
     // Clean up

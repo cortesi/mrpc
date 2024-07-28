@@ -76,7 +76,7 @@ impl RpcService for PongService {
         match method {
             "ping" => {
                 sender
-                    .send_notification("pong".to_string(), vec![Value::String("pong".into())])
+                    .send_notification("pong", vec![Value::String("pong".into())])
                     .await?;
                 Ok(Value::Boolean(true))
             }
@@ -117,7 +117,7 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
     // Start the ping-pong process
     let num_pings = 5;
     for _ in 0..num_pings {
-        client.send_request("ping".to_string(), vec![]).await?;
+        client.send_request("ping", vec![]).await?;
     }
 
     assert_eq!(*pong_count.lock().await, num_pings);
