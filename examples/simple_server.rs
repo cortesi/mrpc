@@ -1,4 +1,4 @@
-use mrpc::{Result, RpcHandle, RpcService, Server};
+use mrpc::{Result, RpcSender, RpcService, Server};
 use rmpv::Value;
 use std::error::Error;
 
@@ -9,7 +9,7 @@ struct SimpleService;
 impl RpcService for SimpleService {
     async fn handle_request<S>(
         &self,
-        _: RpcHandle,
+        _: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> Result<Value> {

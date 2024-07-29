@@ -1,4 +1,4 @@
-use mrpc::{Client, RpcSender, RpcService};
+use mrpc::{Client, RpcService};
 use rmpv::Value;
 use std::error::Error;
 

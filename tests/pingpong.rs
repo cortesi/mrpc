@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use mrpc::{self, Client, RpcError, RpcHandle, RpcSender, RpcService, Server};
+use mrpc::{self, Client, RpcError, RpcSender, RpcService, Server};
 use rmpv::Value;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -15,14 +15,14 @@ struct PingService {
 
 #[async_trait]
 impl RpcService for PingService {
-    async fn connected(&self, _client: RpcHandle) {
+    async fn connected(&self, _client: RpcSender) {
         let mut count = self.connected_count.lock().await;
         *count += 1;
     }
 
     async fn handle_request<S>(
         &self,
-        _sender: RpcHandle,
+        _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
     ) -> mrpc::Result<Value>
@@ -37,7 +37,7 @@ impl RpcService for PingService {
 
     async fn handle_notification<S>(
         &self,
-        _sender: RpcHandle,
+        _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
     ) -> mrpc::Result<()>
@@ -59,14 +59,14 @@ struct PongService {
 
 #[async_trait]
 impl RpcService for PongService {
-    async fn connected(&self, _client: RpcHandle) {
+    async fn connected(&self, _client: RpcSender) {
         let mut count = self.connected_count.lock().await;
         *count += 1;
     }
 
     async fn handle_request<S>(
         &self,
-        sender: RpcHandle,
+        sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
     ) -> mrpc::Result<Value>

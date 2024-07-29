@@ -6,7 +6,6 @@
 use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
-use rmpv::Value;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{
@@ -17,41 +16,7 @@ use tokio::{
 use tracing::trace;
 
 use crate::error::*;
-use crate::{ConnectionHandler, RpcConnection, RpcHandle, RpcService};
-
-/// The interface for sending RPC requests and notifications.
-///
-/// This trait is implemented by types that can send RPC messages to a remote service.
-/// Users typically don't need to implement this trait directly, as it's provided
-/// by the library's client implementations.
-///
-/// Use this trait when you need to abstract over different RPC sender implementations
-/// or when writing generic code that interacts with RPC services.
-///
-/// Example usage:
-/// ```
-/// use mrpc::{RpcSender, Result};
-/// use rmpv::Value;
-///
-/// async fn greet_user<T: RpcSender>(sender: &T, name: &str) -> Result<String> {
-///     let response = sender.send_request(
-///         "greet".to_string(),
-///         vec![Value::String(name.into())]
-///     ).await?;
-///     
-///     Ok(response.as_str().unwrap_or("").to_string())
-/// }
-///
-/// // Later, with a client:
-/// // let client = Client::connect_tcp("127.0.0.1:8080", MyService).await?;
-/// // let greeting = greet_user(&client, "Alice").await?;
-/// // println!("{}", greeting);
-/// ```
-#[async_trait]
-pub trait RpcSender {
-    async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value>;
-    async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()>;
-}
+use crate::{ConnectionHandler, RpcConnection, RpcSender, RpcService, Value};
 
 /// TCP listener for accepting RPC connections.
 struct TcpListener {
@@ -170,7 +135,7 @@ impl<T: RpcService> Server<T> {
 
             tokio::spawn(async move {
                 let (sender, receiver) = mpsc::channel(100);
-                let rpc_handle = RpcHandle {
+                let rpc_handle = RpcSender {
                     sender: sender.clone(),
                 };
                 let mut handler = ConnectionHandler::new(
@@ -191,7 +156,8 @@ impl<T: RpcService> Server<T> {
 /// RPC client for connecting to a server over TCP or Unix domain sockets.
 #[derive(Clone, Debug)]
 pub struct Client<T: RpcService> {
-    sender: RpcHandle,
+    /// Sender for sending RPC requests and notifications.
+    pub sender: RpcSender,
     _handler: Arc<tokio::task::JoinHandle<()>>,
     _phantom: std::marker::PhantomData<T>,
 }
@@ -217,7 +183,7 @@ impl<T: RpcService> Client<T> {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let (sender, receiver) = mpsc::channel(100);
-        let rpc_sender = RpcHandle {
+        let rpc_sender = RpcSender {
             sender: sender.clone(),
         };
         let service = Arc::new(service);
@@ -235,15 +201,15 @@ impl<T: RpcService> Client<T> {
             _phantom: std::marker::PhantomData,
         })
     }
-}
 
-#[async_trait]
-impl<T: RpcService> RpcSender for Client<T> {
-    async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
+    /// Sends an RPC request to the server. Convenience method for `RpcSender::send_request`.
+    pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
         self.sender.send_request(method, params).await
     }
 
-    async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
+    /// Sends an RPC notification to the server. Convenience method for
+    /// `RpcSender::send_notification`.
+    pub async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
         self.sender.send_notification(method, params).await
     }
 }

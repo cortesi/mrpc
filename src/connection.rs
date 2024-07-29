@@ -20,7 +20,6 @@ use tracing::trace;
 use crate::{
     error::{Result, RpcError, ServiceError},
     message::*,
-    RpcSender,
 };
 
 /// Internal message type for communication between the client API and the connection handler.
@@ -37,16 +36,15 @@ pub(crate) enum ClientMessage {
     },
 }
 
-/// Handle for sending RPC requests and notifications to a remote service.
+/// The interface for sending RPC requests and notifications.
 #[derive(Debug, Clone)]
-pub struct RpcHandle {
+pub struct RpcSender {
     pub(crate) sender: mpsc::Sender<ClientMessage>,
 }
 
-#[async_trait]
-impl RpcSender for RpcHandle {
+impl RpcSender {
     /// Sends an RPC request and waits for the response.
-    async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
+    pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender
             .send(ClientMessage::Request {
@@ -62,7 +60,7 @@ impl RpcSender for RpcHandle {
     }
 
     /// Sends an RPC notification without waiting for a response.
-    async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
+    pub async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
         self.sender
             .send(ClientMessage::Notification {
                 method: method.to_string(),
@@ -78,7 +76,7 @@ pub(crate) struct ConnectionHandler<S, T: RpcService> {
     connection: RpcConnection<S>,
     service: Arc<T>,
     client_receiver: mpsc::Receiver<ClientMessage>,
-    rpc_sender: RpcHandle,
+    rpc_sender: RpcSender,
 }
 
 impl<S, T: RpcService> ConnectionHandler<S, T>
@@ -96,7 +94,7 @@ where
             connection,
             service,
             client_receiver: receiver,
-            rpc_sender: RpcHandle { sender },
+            rpc_sender: RpcSender { sender },
         }
     }
 
@@ -253,14 +251,14 @@ where
 pub trait RpcService: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
-    async fn connected(&self, _client: RpcHandle) {}
+    async fn connected(&self, _client: RpcSender) {}
 
     /// Handles an incoming RPC request.
     ///
     /// By default, returns an error indicating the method is not implemented.
     async fn handle_request<S>(
         &self,
-        _client: RpcHandle,
+        _client: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> Result<Value>
@@ -279,7 +277,7 @@ pub trait RpcService: Send + Sync + Clone + 'static {
     /// By default, logs a warning about the unhandled notification.
     async fn handle_notification<S>(
         &self,
-        _client: RpcHandle,
+        _client: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> Result<()>

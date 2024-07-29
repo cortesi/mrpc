@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use mrpc::{self, Client, RpcError, RpcHandle, RpcSender, RpcService, Server};
+use mrpc::{self, Client, RpcError, RpcSender, RpcService, Server};
 use rmpv::Value;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -16,7 +16,7 @@ struct TestService {
 impl RpcService for TestService {
     async fn handle_request<S>(
         &self,
-        _sender: RpcHandle,
+        _sender: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> mrpc::Result<Value>
@@ -39,7 +39,7 @@ impl RpcService for TestService {
 
     async fn handle_notification<S>(
         &self,
-        _sender: RpcHandle,
+        _sender: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> mrpc::Result<()>

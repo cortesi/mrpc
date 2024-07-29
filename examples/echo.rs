@@ -1,4 +1,4 @@
-use mrpc::{Client, Result, RpcHandle, RpcSender, RpcService, Server};
+use mrpc::{Client, Result, RpcSender, RpcService, Server};
 use rmpv::Value;
 
 #[derive(Clone)]
@@ -8,7 +8,7 @@ struct EchoService;
 impl RpcService for EchoService {
     async fn handle_request<S>(
         &self,
-        _: RpcHandle,
+        _: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> Result<Value> {
