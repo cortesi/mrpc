@@ -1,15 +1,15 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use mrpc::{Client, Result, RpcError, RpcSender, RpcService, Server};
+use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server};
 use rmpv::Value;
 use std::path::PathBuf;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct BenchService;
 
 #[async_trait::async_trait]
-impl RpcService for BenchService {
+impl Connection for BenchService {
     async fn handle_request<S>(
         &self,
         _: RpcSender,
@@ -46,10 +46,8 @@ fn bench_echo(c: &mut Criterion) {
                 let (socket_path, _temp_dir) = create_unix_socket_path();
 
                 let socket_path_clone = socket_path.clone();
-                let server = Server::new(BenchService)
-                    .unix(socket_path_clone)
-                    .await
-                    .unwrap();
+                let server: Server<BenchService> =
+                    Server::default().unix(socket_path_clone).await.unwrap();
 
                 let server_handle = tokio::spawn(async move {
                     server.run().await.unwrap();
@@ -79,10 +77,8 @@ fn bench_add(c: &mut Criterion) {
                 let (socket_path, _temp_dir) = create_unix_socket_path();
 
                 let socket_path_clone = socket_path.clone();
-                let server = Server::new(BenchService)
-                    .unix(socket_path_clone)
-                    .await
-                    .unwrap();
+                let server: Server<BenchService> =
+                    Server::default().unix(socket_path_clone).await.unwrap();
 
                 let server_handle = tokio::spawn(async move {
                     server.run().await.unwrap();

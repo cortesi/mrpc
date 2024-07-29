@@ -1,12 +1,12 @@
-use mrpc::{Result, RpcSender, RpcService, Server};
+use mrpc::{Connection, Result, RpcSender, Server};
 use rmpv::Value;
 use std::error::Error;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct SimpleService;
 
 #[async_trait::async_trait]
-impl RpcService for SimpleService {
+impl Connection for SimpleService {
     async fn handle_request<S>(
         &self,
         _: RpcSender,
@@ -33,7 +33,9 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
     if std::path::Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path)?;
     }
-    let server = Server::new(SimpleService).unix(socket_path).await?;
+    let server = Server::from_closure(SimpleService::default)
+        .unix(socket_path)
+        .await?;
     println!("Server listening on {}", socket_path);
     server.run().await?;
     Ok(())

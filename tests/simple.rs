@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use mrpc::{self, Client, RpcError, RpcSender, RpcService, Server};
+use mrpc::{self, Client, Connection, RpcError, RpcSender, Server};
 use rmpv::Value;
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -13,7 +13,7 @@ struct TestService {
 }
 
 #[async_trait]
-impl RpcService for TestService {
+impl Connection for TestService {
     async fn handle_request<S>(
         &self,
         _sender: RpcSender,
@@ -64,11 +64,14 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempdir()?;
     let socket_path = temp_dir.path().join("test.sock");
 
+    let val = Arc::new(Mutex::new(0));
+    let inner = val.clone();
     // Set up the server
-    let service = TestService {
-        notification_count: Arc::new(Mutex::new(0)),
-    };
-    let server = Server::new(service.clone()).unix(&socket_path).await?;
+    let server = Server::from_closure(move || TestService {
+        notification_count: inner.clone(),
+    })
+    .unix(&socket_path)
+    .await?;
     let server_task = tokio::spawn(async move {
         let e = server.run().await;
         if let Err(e) = e {
@@ -76,7 +79,13 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let client = Client::connect_unix(&socket_path, service.clone()).await?;
+    let client = Client::connect_unix(
+        &socket_path,
+        TestService {
+            notification_count: val.clone(),
+        },
+    )
+    .await?;
 
     // Test echo request
     let echo_result = client

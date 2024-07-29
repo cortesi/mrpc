@@ -1,11 +1,11 @@
-use mrpc::{Client, Result, RpcSender, RpcService, Server};
+use mrpc::{Client, Connection, Result, RpcSender, Server};
 use rmpv::Value;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct EchoService;
 
 #[async_trait::async_trait]
-impl RpcService for EchoService {
+impl Connection for EchoService {
     async fn handle_request<S>(
         &self,
         _: RpcSender,
@@ -24,7 +24,9 @@ impl RpcService for EchoService {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let server = Server::new(EchoService).tcp("127.0.0.1:8080").await?;
+    let server = Server::from_closure(EchoService::default)
+        .tcp("127.0.0.1:8080")
+        .await?;
     tokio::spawn(server.run());
 
     let client = Client::connect_tcp("127.0.0.1:8080", EchoService).await?;

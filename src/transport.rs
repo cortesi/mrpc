@@ -3,7 +3,7 @@
 //! Provides implementations for TCP and Unix domain socket transports,
 //! as well as abstractions for RPC servers and clients.
 
-use std::{path::Path, sync::Arc};
+use std::{marker::PhantomData, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::{
@@ -16,7 +16,10 @@ use tokio::{
 use tracing::trace;
 
 use crate::error::*;
-use crate::{ConnectionHandler, RpcConnection, RpcSender, RpcService, Value};
+use crate::{
+    ClosureConnectionMaker, Connection, ConnectionHandler, ConnectionMaker, RpcConnection,
+    RpcSender, Value,
+};
 
 /// TCP listener for accepting RPC connections.
 struct TcpListener {
@@ -86,19 +89,39 @@ enum Listener {
     Unix(UnixListener),
 }
 
-/// RPC server that can listen on TCP or Unix domain sockets.
-pub struct Server<T: RpcService> {
-    service: Arc<T>,
+/// RPC server that can listen on TCP or Unix domain sockets. The service type must implement the
+/// `RpcService` trait and `Default`. A new service instance is created for each connection.
+pub struct Server<T>
+where
+    T: Connection,
+{
+    connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
     listener: Option<Listener>,
+    _phantom: PhantomData<T>,
 }
 
-impl<T: RpcService> Server<T> {
-    /// Creates a new server with the given RPC service.
-    pub fn new(service: T) -> Self {
+impl<T> Server<T>
+where
+    T: Connection,
+{
+    /// Creates a new Server with the given ConnectionMaker.
+    pub fn from_maker<M>(maker: M) -> Self
+    where
+        M: ConnectionMaker<T> + Send + Sync + 'static,
+    {
         Self {
-            service: Arc::new(service),
+            connection_maker: Arc::new(maker),
             listener: None,
+            _phantom: PhantomData,
         }
+    }
+
+    /// Helper method to create a Server from a closure
+    pub fn from_closure<F>(f: F) -> Self
+    where
+        F: Fn() -> T + Send + Sync + 'static,
+    {
+        Self::from_maker(ClosureConnectionMaker::new(f))
     }
 
     /// Configures the server to listen on a TCP address.
@@ -117,36 +140,27 @@ impl<T: RpcService> Server<T> {
     pub async fn run(self) -> Result<()> {
         let listener = self
             .listener
+            .as_ref()
             .ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
         match listener {
-            Listener::Tcp(tcp_listener) => Self::run_internal(self.service, tcp_listener).await,
-            Listener::Unix(unix_listener) => Self::run_internal(self.service, unix_listener).await,
+            Listener::Tcp(tcp_listener) => self.run_internal(tcp_listener).await,
+            Listener::Unix(unix_listener) => self.run_internal(unix_listener).await,
         }
     }
 
-    async fn run_internal<L>(service: Arc<T>, listener: L) -> Result<()>
+    async fn run_internal<L>(&self, listener: &L) -> Result<()>
     where
         L: Accept,
         L::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         loop {
             let connection = RpcConnection::new(listener.accept().await?);
-            let service_clone = service.clone();
+            let service = self.connection_maker.make_connection();
 
             tokio::spawn(async move {
                 let (sender, receiver) = mpsc::channel(100);
-                let rpc_handle = RpcSender {
-                    sender: sender.clone(),
-                };
-                let mut handler = ConnectionHandler::new(
-                    connection,
-                    service_clone.clone(),
-                    receiver,
-                    sender.clone(),
-                );
-                if let Err(e) = service_clone.connected(rpc_handle).await {
-                    tracing::error!("Connection error: {}", e);
-                };
+                let mut handler =
+                    ConnectionHandler::new(connection, service, receiver, sender.clone());
                 if let Err(e) = handler.run().await {
                     tracing::error!("Connection error: {}", e);
                 }
@@ -156,15 +170,15 @@ impl<T: RpcService> Server<T> {
 }
 
 /// RPC client for connecting to a server over TCP or Unix domain sockets.
-#[derive(Clone, Debug)]
-pub struct Client<T: RpcService> {
+#[derive(Debug)]
+pub struct Client<T: Connection> {
     /// Sender for sending RPC requests and notifications.
     pub sender: RpcSender,
     _handler: Arc<tokio::task::JoinHandle<()>>,
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: RpcService> Client<T> {
+impl<T: Connection> Client<T> {
     /// Creates a new client connected to a Unix domain socket.
     pub async fn connect_unix<P: AsRef<Path>>(path: P, service: T) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
@@ -188,9 +202,7 @@ impl<T: RpcService> Client<T> {
         let rpc_sender = RpcSender {
             sender: sender.clone(),
         };
-        let service = Arc::new(service);
-        let mut handler = ConnectionHandler::new(connection, service.clone(), receiver, sender);
-        service.connected(rpc_sender.clone()).await?;
+        let mut handler = ConnectionHandler::new(connection, service, receiver, sender);
         let handler_task = tokio::spawn(async move {
             if let Err(e) = handler.run().await {
                 tracing::error!("Handler error: {}", e);

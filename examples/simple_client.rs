@@ -1,13 +1,13 @@
-use mrpc::{Client, RpcService};
+use mrpc::{Client, Connection};
 use rmpv::Value;
 use std::error::Error;
 
 // We need to define a dummy service even for a client
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct DummyClientService;
 
 #[async_trait::async_trait]
-impl RpcService for DummyClientService {}
+impl Connection for DummyClientService {}
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn Error>> {

@@ -4,8 +4,8 @@
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
 use std::{
+    marker::PhantomData,
     pin::Pin,
-    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -72,21 +72,21 @@ impl RpcSender {
 }
 
 /// Manages bidirectional communication between a local service and a remote RPC connection.
-pub(crate) struct ConnectionHandler<S, T: RpcService> {
+pub(crate) struct ConnectionHandler<S, T: Connection> {
     connection: RpcConnection<S>,
-    service: Arc<T>,
+    service: T,
     client_receiver: mpsc::Receiver<ClientMessage>,
     rpc_sender: RpcSender,
 }
 
-impl<S, T: RpcService> ConnectionHandler<S, T>
+impl<S, T: Connection> ConnectionHandler<S, T>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     /// Creates a new ConnectionHandler with the given connection, service, and message channels.
     pub fn new(
         connection: RpcConnection<S>,
-        service: Arc<T>,
+        service: T,
         receiver: mpsc::Receiver<ClientMessage>,
         sender: mpsc::Sender<ClientMessage>,
     ) -> Self {
@@ -99,6 +99,7 @@ where
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        self.service.connected(self.rpc_sender.clone()).await?;
         loop {
             tokio::select! {
                 Some(client_message) = self.client_receiver.recv() => {
@@ -210,6 +211,52 @@ where
     }
 }
 
+/// A trait for creating connections.
+///
+/// `ConnectionMaker` provides a generic way to create objects that implement the `Connection` trait.
+/// It is automatically implemented for any type that implements both `Connection` and `Default`.
+///
+/// The ConnectionMaker is used to create a new Connection object for each incoming connection.
+pub trait ConnectionMaker<T>: Send + Sync
+where
+    T: Connection,
+{
+    fn make_connection(&self) -> T;
+}
+
+// ClosureConnectionMaker implementation (assuming it's already defined)
+pub struct ClosureConnectionMaker<F, T>
+where
+    F: Fn() -> T + Send + Sync,
+    T: Connection,
+{
+    make_fn: F,
+    _phantom: PhantomData<T>,
+}
+
+impl<F, T> ClosureConnectionMaker<F, T>
+where
+    F: Fn() -> T + Send + Sync,
+    T: Connection,
+{
+    pub fn new(make_fn: F) -> Self {
+        ClosureConnectionMaker {
+            make_fn,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<F, T> ConnectionMaker<T> for ClosureConnectionMaker<F, T>
+where
+    F: Fn() -> T + Send + Sync,
+    T: Connection,
+{
+    fn make_connection(&self) -> T {
+        (self.make_fn)()
+    }
+}
+
 /// The interface for implementing RPC service functionality.
 ///
 /// This trait allows you to create custom RPC services by implementing
@@ -220,35 +267,8 @@ where
 ///
 /// Use the `#[async_trait]` attribute from the `async_trait` crate when
 /// implementing this trait to support async methods.
-///
-/// Example implementation:
-/// ```
-/// use mrpc::{Result, RpcHandle, RpcService};
-/// use rmpv::Value;
-///
-/// #[derive(Clone)]
-/// struct MyService;
-///
-/// #[async_trait::async_trait]
-/// impl RpcService for MyService {
-///     async fn handle_request<S>(
-///         &self,
-///         _client: RpcHandle,
-///         method: &str,
-///         params: Vec<Value>,
-///     ) -> Result<Value> {
-///         match method {
-///             "greet" => {
-///                 let name = params[0].as_str().unwrap_or("World");
-///                 Ok(Value::String(format!("Hello, {}!", name).into()))
-///             }
-///             _ => Err(mrpc::RpcError::Protocol(format!("Unknown method: {}", method))),
-///         }
-///     }
-/// }
-/// ```
 #[async_trait]
-pub trait RpcService: Send + Sync + Clone + 'static {
+pub trait Connection: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&self, _client: RpcSender) -> Result<()> {
