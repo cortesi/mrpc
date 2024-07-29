@@ -15,7 +15,7 @@ struct TestService {
 #[async_trait]
 impl Connection for TestService {
     async fn handle_request<S>(
-        &self,
+        &mut self,
         _sender: RpcSender,
         method: &str,
         params: Vec<Value>,
@@ -38,7 +38,7 @@ impl Connection for TestService {
     }
 
     async fn handle_notification<S>(
-        &self,
+        &mut self,
         _sender: RpcSender,
         method: &str,
         params: Vec<Value>,

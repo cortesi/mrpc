@@ -15,14 +15,14 @@ struct PingService {
 
 #[async_trait]
 impl Connection for PingService {
-    async fn connected(&self, _client: RpcSender) -> mrpc::Result<()> {
+    async fn connected(&mut self, _client: RpcSender) -> mrpc::Result<()> {
         let mut count = self.connected_count.lock().await;
         *count += 1;
         Ok(())
     }
 
     async fn handle_request<S>(
-        &self,
+        &mut self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
@@ -37,7 +37,7 @@ impl Connection for PingService {
     }
 
     async fn handle_notification<S>(
-        &self,
+        &mut self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
@@ -60,14 +60,14 @@ struct PongService {
 
 #[async_trait]
 impl Connection for PongService {
-    async fn connected(&self, _client: RpcSender) -> mrpc::Result<()> {
+    async fn connected(&mut self, _client: RpcSender) -> mrpc::Result<()> {
         let mut count = self.connected_count.lock().await;
         *count += 1;
         Ok(())
     }
 
     async fn handle_request<S>(
-        &self,
+        &mut self,
         sender: RpcSender,
         method: &str,
         _params: Vec<Value>,

@@ -271,7 +271,7 @@ where
 pub trait Connection: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
-    async fn connected(&self, _client: RpcSender) -> Result<()> {
+    async fn connected(&mut self, _client: RpcSender) -> Result<()> {
         Ok(())
     }
 
@@ -279,7 +279,7 @@ pub trait Connection: Send + Sync + Clone + 'static {
     ///
     /// By default, returns an error indicating the method is not implemented.
     async fn handle_request<S>(
-        &self,
+        &mut self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,
@@ -298,7 +298,7 @@ pub trait Connection: Send + Sync + Clone + 'static {
     ///
     /// By default, logs a warning about the unhandled notification.
     async fn handle_notification<S>(
-        &self,
+        &mut self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,

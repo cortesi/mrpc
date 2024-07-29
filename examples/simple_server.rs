@@ -8,7 +8,7 @@ struct SimpleService;
 #[async_trait::async_trait]
 impl Connection for SimpleService {
     async fn handle_request<S>(
-        &self,
+        &mut self,
         _: RpcSender,
         method: &str,
         params: Vec<Value>,
