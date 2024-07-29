@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use mrpc::{Client, Result, RpcError, RpcHandle, RpcSender, RpcService, Server};
+use mrpc::{Client, Result, RpcError, RpcSender, RpcService, Server};
 use rmpv::Value;
 use std::path::PathBuf;
 use tempfile::tempdir;
@@ -12,7 +12,7 @@ struct BenchService;
 impl RpcService for BenchService {
     async fn handle_request<S>(
         &self,
-        _: RpcHandle,
+        _: RpcSender,
         method: &str,
         params: Vec<Value>,
     ) -> Result<Value> {
@@ -60,7 +60,7 @@ fn bench_echo(c: &mut Criterion) {
                     .unwrap();
 
                 let result = client
-                    .send_request("echo".to_string(), vec![Value::String("hello".into())])
+                    .send_request("echo", &[Value::String("hello".into())])
                     .await
                     .unwrap();
 
@@ -94,8 +94,8 @@ fn bench_add(c: &mut Criterion) {
 
                 let result = client
                     .send_request(
-                        "add".to_string(),
-                        vec![Value::Integer(40.into()), Value::Integer(2.into())],
+                        "add",
+                        &[Value::Integer(40.into()), Value::Integer(2.into())],
                     )
                     .await
                     .unwrap();

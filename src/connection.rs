@@ -251,7 +251,9 @@ where
 pub trait RpcService: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
-    async fn connected(&self, _client: RpcSender) {}
+    async fn connected(&self, _client: RpcSender) -> Result<()> {
+        Ok(())
+    }
 
     /// Handles an incoming RPC request.
     ///
