@@ -6,7 +6,7 @@ struct EchoService;
 
 #[async_trait::async_trait]
 impl Connection for EchoService {
-    async fn handle_request<S>(
+    async fn handle_request(
         &mut self,
         _: RpcSender,
         method: &str,

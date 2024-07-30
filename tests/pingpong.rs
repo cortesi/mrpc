@@ -3,7 +3,6 @@ use mrpc::{self, Client, Connection, RpcError, RpcSender, Server};
 use rmpv::Value;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tracing_test::traced_test;
 
@@ -21,30 +20,24 @@ impl Connection for PingService {
         Ok(())
     }
 
-    async fn handle_request<S>(
+    async fn handle_request(
         &mut self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
-    ) -> mrpc::Result<Value>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> mrpc::Result<Value> {
         Err(RpcError::Protocol(format!(
             "PingService: Unknown method: {}",
             method
         )))
     }
 
-    async fn handle_notification<S>(
+    async fn handle_notification(
         &mut self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
-    ) -> mrpc::Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> mrpc::Result<()> {
         if method == "pong" {
             let mut count = self.pong_count.lock().await;
             *count += 1;
@@ -66,15 +59,12 @@ impl Connection for PongService {
         Ok(())
     }
 
-    async fn handle_request<S>(
+    async fn handle_request(
         &mut self,
         sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
-    ) -> mrpc::Result<Value>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> mrpc::Result<Value> {
         match method {
             "ping" => {
                 sender

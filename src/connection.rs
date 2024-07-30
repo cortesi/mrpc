@@ -136,7 +136,7 @@ where
             Message::Request(request) => {
                 let result = self
                     .service
-                    .handle_request::<S>(self.rpc_sender.clone(), &request.method, request.params)
+                    .handle_request(self.rpc_sender.clone(), &request.method, request.params)
                     .await;
                 let response = match result {
                     Ok(value) => Response {
@@ -165,7 +165,7 @@ where
             Message::Notification(notification) => {
                 if let Err(e) = self
                     .service
-                    .handle_notification::<S>(
+                    .handle_notification(
                         self.rpc_sender.clone(),
                         &notification.method,
                         notification.params,
@@ -275,7 +275,7 @@ where
 /// Use the `#[async_trait]` attribute from the `async_trait` crate when
 /// implementing this trait to support async methods.
 #[async_trait]
-pub trait Connection: Send + Sync + Clone + 'static {
+pub trait Connection: Send + Sync + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&mut self, _client: RpcSender) -> Result<()> {
@@ -285,15 +285,12 @@ pub trait Connection: Send + Sync + Clone + 'static {
     /// Handles an incoming RPC request.
     ///
     /// By default, returns an error indicating the method is not implemented.
-    async fn handle_request<S>(
+    async fn handle_request(
         &mut self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,
-    ) -> Result<Value>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> Result<Value> {
         tracing::warn!("Unhandled request: method={}, params={:?}", method, params);
         Err(RpcError::Protocol(format!(
             "Method '{}' not implemented",
@@ -304,15 +301,12 @@ pub trait Connection: Send + Sync + Clone + 'static {
     /// Handles an incoming RPC notification.
     ///
     /// By default, logs a warning about the unhandled notification.
-    async fn handle_notification<S>(
+    async fn handle_notification(
         &mut self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,
-    ) -> Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> Result<()> {
         tracing::warn!(
             "Unhandled notification: method={}, params={:?}",
             method,

@@ -3,7 +3,6 @@ use mrpc::{self, Client, Connection, RpcError, RpcSender, Server};
 use rmpv::Value;
 use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
 use tracing_test::traced_test;
 
@@ -14,15 +13,12 @@ struct TestService {
 
 #[async_trait]
 impl Connection for TestService {
-    async fn handle_request<S>(
+    async fn handle_request(
         &mut self,
         _sender: RpcSender,
         method: &str,
         params: Vec<Value>,
-    ) -> mrpc::Result<Value>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> mrpc::Result<Value> {
         match method {
             "echo" => Ok(params.into_iter().next().unwrap_or(Value::Nil)),
             "add" => {
@@ -37,15 +33,12 @@ impl Connection for TestService {
         }
     }
 
-    async fn handle_notification<S>(
+    async fn handle_notification(
         &mut self,
         _sender: RpcSender,
         method: &str,
         params: Vec<Value>,
-    ) -> mrpc::Result<()>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
+    ) -> mrpc::Result<()> {
         println!(
             "Received notification: {} with params: {:?}",
             method, params
