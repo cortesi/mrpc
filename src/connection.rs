@@ -3,19 +3,14 @@
 //! Defines structures and traits for managing RPC connections,
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
-use std::{
-    marker::PhantomData,
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::marker::PhantomData;
 
 use async_trait::async_trait;
 use rmpv::Value;
 use tokio::runtime::Handle;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, WriteHalf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
     sync::{mpsc, oneshot},
-    time::{sleep, Duration},
 };
 use tokio_util::io::SyncIoBridge;
 
@@ -383,46 +378,5 @@ where
         self.write_half.write_all(&buffer).await?;
         self.write_half.flush().await?;
         Ok(())
-    }
-}
-
-impl<S> AsyncRead for RpcConnection<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        // We can't implement this directly anymore, so we'll return Poll::Pending
-        Poll::Pending
-    }
-}
-
-impl<S> AsyncWrite for RpcConnection<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::result::Result<usize, std::io::Error>> {
-        Pin::new(&mut self.write_half).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<(), std::io::Error>> {
-        Pin::new(&mut self.write_half).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::result::Result<(), std::io::Error>> {
-        Pin::new(&mut self.write_half).poll_shutdown(cx)
     }
 }
