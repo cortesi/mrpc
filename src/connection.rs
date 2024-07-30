@@ -11,11 +11,15 @@ use std::{
 
 use async_trait::async_trait;
 use rmpv::Value;
+use tokio::runtime::Handle;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, WriteHalf},
     sync::{mpsc, oneshot},
+    time::{sleep, Duration},
 };
-use tracing::trace;
+use tokio_util::io::SyncIoBridge;
+
+use tracing::{error, trace};
 
 use crate::{
     error::{Result, RpcError, ServiceError},
@@ -71,8 +75,10 @@ impl RpcSender {
     }
 }
 
-/// Manages bidirectional communication between a local service and a remote RPC connection.
-pub(crate) struct ConnectionHandler<S, T: Connection> {
+pub(crate) struct ConnectionHandler<S, T: Connection>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     connection: RpcConnection<S>,
     service: T,
     client_receiver: mpsc::Receiver<ClientMessage>,
@@ -87,41 +93,47 @@ where
     pub fn new(
         connection: RpcConnection<S>,
         service: T,
-        receiver: mpsc::Receiver<ClientMessage>,
-        sender: mpsc::Sender<ClientMessage>,
+        client_receiver: mpsc::Receiver<ClientMessage>,
+        client_sender: mpsc::Sender<ClientMessage>,
     ) -> Self {
         Self {
             connection,
             service,
-            client_receiver: receiver,
-            rpc_sender: RpcSender { sender },
+            client_receiver,
+            rpc_sender: RpcSender {
+                sender: client_sender,
+            },
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
         self.service.connected(self.rpc_sender.clone()).await?;
+
         loop {
             tokio::select! {
                 Some(client_message) = self.client_receiver.recv() => {
                     if let Err(e) = self.handle_client_message(client_message).await {
-                        tracing::warn!("Error handling client message: {}", e);
+                        error!("Error handling client message: {}", e);
                     }
                 }
-                message_result = self.connection.read_message() => {
+                Some(message_result) = self.connection.message_receiver.recv() => {
                     match message_result {
                         Ok(message) => {
                             if let Err(e) = self.handle_incoming_message(message).await {
-                                tracing::warn!("Error handling incoming message: {}", e);
+                                error!("Error handling incoming message: {}", e);
                             }
                         }
                         Err(e) => {
-                            tracing::error!("Error reading message: {}", e);
                             return Err(e);
                         }
                     }
                 }
+                else => {
+                    break;
+                }
             }
         }
+        Ok(())
     }
 
     async fn handle_incoming_message(&mut self, message: Message) -> Result<()> {
@@ -316,38 +328,51 @@ pub trait Connection: Send + Sync + Clone + 'static {
 }
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
-#[derive(Debug)]
-pub(crate) struct RpcConnection<S> {
-    stream: S,
-    next_request_id: u32,
-    pending_requests: std::collections::HashMap<u32, oneshot::Sender<Result<Value>>>,
+pub(crate) struct RpcConnection<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    pub(crate) write_half: WriteHalf<S>,
+    pub(crate) next_request_id: u32,
+    pub(crate) pending_requests: std::collections::HashMap<u32, oneshot::Sender<Result<Value>>>,
+    pub(crate) message_receiver: mpsc::Receiver<Result<Message>>,
 }
 
 impl<S> RpcConnection<S>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     /// Creates a new RpcConnection with the given stream.
     pub fn new(stream: S) -> Self {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let (message_sender, message_receiver) = mpsc::channel(1000);
+
+        // Spawn a blocking task to read messages
+        Handle::current().spawn_blocking(move || {
+            let mut sync_reader = SyncIoBridge::new(read_half);
+            loop {
+                match Message::decode(&mut sync_reader) {
+                    Ok(message) => match message_sender.blocking_send(Ok(message)) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Error sending message: {}", e);
+                            break;
+                        }
+                    },
+                    Err(e) => {
+                        let _ = message_sender.blocking_send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
+
         Self {
-            stream,
+            write_half,
             next_request_id: 1,
             pending_requests: std::collections::HashMap::new(),
+            message_receiver,
         }
-    }
-
-    /// Reads and decodes the next message from the stream.
-    pub async fn read_message(&mut self) -> Result<Message> {
-        let mut length_bytes = [0u8; 4];
-        self.stream.read_exact(&mut length_bytes).await?;
-        let length = u32::from_be_bytes(length_bytes) as usize;
-
-        let mut buffer = vec![0u8; length];
-        self.stream.read_exact(&mut buffer).await?;
-
-        let message = Message::decode(&mut &buffer[..])?;
-        trace!("received message: {:?}", message);
-        Ok(message)
     }
 
     /// Encodes and writes a message to the stream.
@@ -355,58 +380,49 @@ where
         trace!("sending message: {:?}", message);
         let mut buffer = Vec::new();
         message.encode(&mut buffer)?;
-
-        let length = buffer.len() as u32;
-        let length_bytes = length.to_be_bytes();
-
-        self.stream.write_all(&length_bytes).await?;
-        self.stream.write_all(&buffer).await?;
-        self.stream.flush().await?;
-
+        self.write_half.write_all(&buffer).await?;
+        self.write_half.flush().await?;
         Ok(())
     }
 }
 
 impl<S> AsyncRead for RpcConnection<S>
 where
-    S: AsyncRead + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Polls the underlying stream for read readiness.
     fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buf)
+        // We can't implement this directly anymore, so we'll return Poll::Pending
+        Poll::Pending
     }
 }
 
 impl<S> AsyncWrite for RpcConnection<S>
 where
-    S: AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin,
 {
-    /// Polls the underlying stream for write readiness.
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::result::Result<usize, std::io::Error>> {
-        Pin::new(&mut self.stream).poll_write(cx, buf)
+        Pin::new(&mut self.write_half).poll_write(cx, buf)
     }
 
-    /// Flushes the underlying stream.
     fn poll_flush(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::result::Result<(), std::io::Error>> {
-        Pin::new(&mut self.stream).poll_flush(cx)
+        Pin::new(&mut self.write_half).poll_flush(cx)
     }
 
-    /// Closes the underlying stream.
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<std::result::Result<(), std::io::Error>> {
-        Pin::new(&mut self.stream).poll_shutdown(cx)
+        Pin::new(&mut self.write_half).poll_shutdown(cx)
     }
 }

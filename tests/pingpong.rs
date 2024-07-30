@@ -103,9 +103,12 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
     let pong_server_task = tokio::spawn(async move {
         let e = server.run().await;
         if let Err(e) = e {
-            eprintln!("Server error: {}", e);
+            panic!("Server error: {}", e);
         }
     });
+
+    // Give the server a moment to start up
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     // Set up the Ping client
     let pong_count = Arc::new(Mutex::new(0));
@@ -121,9 +124,14 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
         client.send_request("ping", &[]).await?;
     }
 
-    assert_eq!(*pong_count.lock().await, num_pings);
-    // Assert that the connected method was called for both client and server
-    assert_eq!(*ping_service.connected_count.lock().await, 1);
+    // Give some time for all pongs to be processed
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let final_pong_count = *pong_count.lock().await;
+    let final_connected_count = *ping_service.connected_count.lock().await;
+
+    assert_eq!(final_pong_count, num_pings, "Pong count mismatch");
+    assert_eq!(final_connected_count, 1, "Connected count mismatch");
 
     pong_server_task.abort();
     Ok(())

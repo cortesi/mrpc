@@ -154,13 +154,12 @@ where
         L::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         loop {
-            let connection = RpcConnection::new(listener.accept().await?);
-            let service = self.connection_maker.make_connection();
-
+            let rpc_conn = listener.accept().await?;
+            let connection = self.connection_maker.make_connection();
             tokio::spawn(async move {
                 let (sender, receiver) = mpsc::channel(100);
                 let mut handler =
-                    ConnectionHandler::new(connection, service, receiver, sender.clone());
+                    ConnectionHandler::new(rpc_conn, connection, receiver, sender.clone());
                 if let Err(e) = handler.run().await {
                     tracing::error!("Connection error: {}", e);
                 }
