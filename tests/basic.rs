@@ -1,4 +1,7 @@
 use async_trait::async_trait;
+use std::time::Duration;
+use tokio::task;
+
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server, ServiceError, Value};
 
 struct TestService;
@@ -78,6 +81,35 @@ async fn test_method_not_found() -> Result<()> {
             );
         }
         _ => panic!("Expected Service error, got {:?}", result),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_requests() -> Result<()> {
+    let (client, _) = setup_server_and_client().await?;
+    let client = std::sync::Arc::new(client);
+
+    let num_requests = 100;
+    let mut handles = vec![];
+
+    for i in 0..num_requests {
+        let client_clone = client.clone();
+        let handle = task::spawn(async move {
+            // Add a small delay to increase the chance of concurrent execution
+            tokio::time::sleep(Duration::from_millis(i % 10)).await;
+            let result = client_clone
+                .send_request("add", &[Value::from(i), Value::from(i)])
+                .await?;
+            assert_eq!(result, Value::from(i * 2));
+            Ok::<_, RpcError>(())
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.await.unwrap()?;
     }
 
     Ok(())

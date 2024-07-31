@@ -25,11 +25,11 @@ impl Connection for EchoService {
 #[tokio::main]
 async fn main() -> Result<()> {
     let server = Server::from_closure(EchoService::default)
-        .tcp("127.0.0.1:8080")
+        .tcp("127.0.0.1:0")
         .await?;
+    let addr = server.local_addr().unwrap();
     tokio::spawn(server.run());
-
-    let client = Client::connect_tcp("127.0.0.1:8080", EchoService).await?;
+    let client = Client::connect_tcp(&addr.to_string(), EchoService).await?;
     let result = client
         .send_request("echo", &[Value::String("Hello".into())])
         .await?;
