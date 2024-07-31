@@ -1,14 +1,16 @@
 use async_trait::async_trait;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio::task;
+use tokio::time::timeout;
 
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server, ServiceError, Value};
 
-struct TestService;
+struct TestServer;
 
 #[async_trait]
-#[async_trait]
-impl Connection for TestService {
+impl Connection for TestServer {
     async fn handle_request(
         &mut self,
         _: RpcSender,
@@ -37,8 +39,55 @@ impl Connection for TestService {
     }
 }
 
-async fn setup_server_and_client() -> Result<(Client<TestService>, Server<TestService>)> {
-    let server = Server::from_closure(|| TestService)
+struct TestClient;
+
+impl Default for TestClient {
+    fn default() -> Self {
+        TestClient
+    }
+}
+
+#[async_trait]
+impl Connection for TestClient {}
+
+struct TestClientConnect {
+    connected_success: Arc<Mutex<bool>>,
+}
+
+impl TestClientConnect {
+    fn new() -> Self {
+        TestClientConnect {
+            connected_success: Arc::new(Mutex::new(false)),
+        }
+    }
+}
+
+impl Default for TestClientConnect {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl Connection for TestClientConnect {
+    async fn connected(&mut self, client: RpcSender) -> Result<()> {
+        // Send a message during connection
+        let result = client
+            .send_request("add", &[Value::from(10), Value::from(20)])
+            .await?;
+        assert_eq!(result, Value::from(30), "Connected method request failed");
+
+        // Set the flag to indicate successful completion
+        let mut success = self.connected_success.lock().await;
+        *success = true;
+
+        Ok(())
+    }
+}
+
+async fn setup_server_and_client<T: Connection + Default>(
+) -> Result<(Client<T>, Server<TestServer>)> {
+    let server = Server::from_closure(|| TestServer)
         .tcp("127.0.0.1:0")
         .await?;
     let addr = server.local_addr()?;
@@ -47,14 +96,40 @@ async fn setup_server_and_client() -> Result<(Client<TestService>, Server<TestSe
         server.run().await.unwrap();
     });
 
-    let client = Client::connect_tcp(&addr.to_string(), TestService).await?;
+    let client = Client::connect_tcp(&addr.to_string(), T::default()).await?;
 
-    Ok((client, Server::from_closure(|| TestService)))
+    Ok((client, Server::from_closure(|| TestServer)))
+}
+
+async fn setup_server_and_client_with_connect() -> Result<(
+    Client<TestClientConnect>,
+    Server<TestServer>,
+    Arc<Mutex<bool>>,
+)> {
+    let test_client = TestClientConnect::new();
+    let connected_success = test_client.connected_success.clone();
+
+    let server = Server::from_closure(|| TestServer)
+        .tcp("127.0.0.1:0")
+        .await?;
+    let addr = server.local_addr()?;
+
+    let _server_handle = tokio::spawn(async move {
+        server.run().await.unwrap();
+    });
+
+    let client = Client::connect_tcp(&addr.to_string(), test_client).await?;
+
+    Ok((
+        client,
+        Server::from_closure(|| TestServer),
+        connected_success,
+    ))
 }
 
 #[tokio::test]
 async fn test_basic_request_response() -> Result<()> {
-    let (client, _) = setup_server_and_client().await?;
+    let (client, _) = setup_server_and_client::<TestClient>().await?;
 
     let result = client
         .send_request("add", &[Value::from(5), Value::from(3)])
@@ -66,7 +141,7 @@ async fn test_basic_request_response() -> Result<()> {
 
 #[tokio::test]
 async fn test_method_not_found() -> Result<()> {
-    let (client, _) = setup_server_and_client().await?;
+    let (client, _) = setup_server_and_client::<TestClient>().await?;
 
     let result = client
         .send_request("non_existent_method", &[Value::from(1)])
@@ -88,7 +163,7 @@ async fn test_method_not_found() -> Result<()> {
 
 #[tokio::test]
 async fn test_concurrent_requests() -> Result<()> {
-    let (client, _) = setup_server_and_client().await?;
+    let (client, _) = setup_server_and_client::<TestClient>().await?;
     let client = std::sync::Arc::new(client);
 
     let num_requests = 100;
@@ -97,7 +172,6 @@ async fn test_concurrent_requests() -> Result<()> {
     for i in 0..num_requests {
         let client_clone = client.clone();
         let handle = task::spawn(async move {
-            // Add a small delay to increase the chance of concurrent execution
             tokio::time::sleep(Duration::from_millis(i % 10)).await;
             let result = client_clone
                 .send_request("add", &[Value::from(i), Value::from(i)])
@@ -113,4 +187,33 @@ async fn test_concurrent_requests() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_client_request_from_connected() -> Result<()> {
+    let timeout_duration = Duration::from_secs(5); // 5 second timeout
+
+    let result = timeout(timeout_duration, async {
+        let (_client, _, connected_success) = setup_server_and_client_with_connect().await?;
+
+        // Wait for the connected method to complete or timeout
+        for _ in 0..50 {
+            // Check every 100ms for 5 seconds
+            if *connected_success.lock().await {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        Err(RpcError::Protocol(
+            "Connected method did not complete in time".into(),
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(RpcError::Protocol("Test timed out".into())),
+    }
 }
