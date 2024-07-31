@@ -178,10 +178,31 @@ where
             Message::Response(response) => {
                 if let Some(sender) = self.connection.pending_requests.remove(&response.id) {
                     let _ = sender.send(response.result.map_err(|e| {
-                        RpcError::Service(ServiceError {
-                            name: "RemoteError".to_string(),
-                            value: e,
-                        })
+                        if let Value::Map(map) = e {
+                            if let (Some(Value::String(name)), Some(value)) = (
+                                map.iter()
+                                    .find(|(k, _)| k == &Value::from("name"))
+                                    .map(|(_, v)| v),
+                                map.iter()
+                                    .find(|(k, _)| k == &Value::from("value"))
+                                    .map(|(_, v)| v),
+                            ) {
+                                RpcError::Service(ServiceError {
+                                    name: name.as_str().unwrap().to_string(),
+                                    value: value.clone(),
+                                })
+                            } else {
+                                RpcError::Service(ServiceError {
+                                    name: "UnknownError".to_string(),
+                                    value: Value::Map(map),
+                                })
+                            }
+                        } else {
+                            RpcError::Service(ServiceError {
+                                name: "RemoteError".to_string(),
+                                value: e,
+                            })
+                        }
                     }));
                 } else {
                     tracing::warn!("Received response for unknown request id: {}", response.id);

@@ -124,6 +124,18 @@ where
         Self::from_maker(ClosureConnectionMaker::new(f))
     }
 
+    /// Returns the bound address of the server. Only valid for TCP listeners that have already
+    /// been bound, otherwise returns an error.
+    pub fn local_addr(&self) -> Result<std::net::SocketAddr> {
+        match &self.listener {
+            Some(Listener::Tcp(tcp_listener)) => Ok(tcp_listener.inner.local_addr()?),
+            Some(Listener::Unix(_)) => Err(RpcError::Protocol(
+                "Unix sockets don't have a SocketAddr".into(),
+            )),
+            None => Err(RpcError::Protocol("No listener configured".into())),
+        }
+    }
+
     /// Configures the server to listen on a TCP address.
     pub async fn tcp(mut self, addr: &str) -> Result<Self> {
         self.listener = Some(Listener::Tcp(TcpListener::bind(addr).await?));
