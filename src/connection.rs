@@ -4,17 +4,18 @@
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rmpv::Value;
 use tokio::runtime::Handle;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, Mutex},
 };
 use tokio_util::io::SyncIoBridge;
 
-use tracing::{error, trace};
+use tracing::{error, trace, warn};
 
 use crate::{
     error::{Result, RpcError, ServiceError},
@@ -75,7 +76,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     connection: RpcConnection<S>,
-    service: T,
+    service: Arc<Mutex<T>>,
     client_receiver: mpsc::Receiver<ClientMessage>,
     rpc_sender: RpcSender,
 }
@@ -84,7 +85,6 @@ impl<S, T: Connection> ConnectionHandler<S, T>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    /// Creates a new ConnectionHandler with the given connection, service, and message channels.
     pub fn new(
         connection: RpcConnection<S>,
         service: T,
@@ -93,7 +93,7 @@ where
     ) -> Self {
         Self {
             connection,
-            service,
+            service: Arc::new(Mutex::new(service)),
             client_receiver,
             rpc_sender: RpcSender {
                 sender: client_sender,
@@ -102,7 +102,17 @@ where
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        self.service.connected(self.rpc_sender.clone()).await?;
+        let (connected_tx, mut connected_rx) = tokio::sync::oneshot::channel();
+        let rpc_sender_clone = self.rpc_sender.clone();
+        let service_clone = self.service.clone();
+
+        // Spawn the connected method in a separate task
+        tokio::spawn(async move {
+            let result = service_clone.lock().await.connected(rpc_sender_clone).await;
+            let _ = connected_tx.send(result);
+        });
+
+        let mut connected_done = false;
 
         loop {
             tokio::select! {
@@ -123,11 +133,28 @@ where
                         }
                     }
                 }
+                connected_result = &mut connected_rx, if !connected_done => {
+                    connected_done = true;
+                    match connected_result {
+                        Ok(Ok(())) => {
+                            // Connected method succeeded, continue with the loop
+                        }
+                        Ok(Err(e)) => {
+                            // Connected method returned an error
+                            return Err(e);
+                        }
+                        Err(_) => {
+                            // Connected task was cancelled or panicked
+                            return Err(RpcError::Protocol("Connected task failed".into()));
+                        }
+                    }
+                }
                 else => {
                     break;
                 }
             }
         }
+
         Ok(())
     }
 
@@ -136,6 +163,8 @@ where
             Message::Request(request) => {
                 let result = self
                     .service
+                    .lock()
+                    .await
                     .handle_request(self.rpc_sender.clone(), &request.method, request.params)
                     .await;
                 let response = match result {
@@ -144,14 +173,14 @@ where
                         result: Ok(value),
                     },
                     Err(RpcError::Service(service_error)) => {
-                        tracing::warn!("Service error: {}", service_error);
+                        warn!("Service error: {}", service_error);
                         Response {
                             id: request.id,
                             result: Err(service_error.into()),
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("RPC error: {}", e);
+                        warn!("RPC error: {}", e);
                         Response {
                             id: request.id,
                             result: Err(Value::String(format!("Internal error: {}", e).into())),
@@ -165,6 +194,8 @@ where
             Message::Notification(notification) => {
                 if let Err(e) = self
                     .service
+                    .lock()
+                    .await
                     .handle_notification(
                         self.rpc_sender.clone(),
                         &notification.method,
@@ -172,7 +203,7 @@ where
                     )
                     .await
                 {
-                    tracing::warn!("Error handling notification: {}", e);
+                    warn!("Error handling notification: {}", e);
                 }
             }
             Message::Response(response) => {
@@ -205,14 +236,13 @@ where
                         }
                     }));
                 } else {
-                    tracing::warn!("Received response for unknown request id: {}", response.id);
+                    warn!("Received response for unknown request id: {}", response.id);
                 }
             }
         }
         Ok(())
     }
 
-    /// Processes a message from the local client API.
     async fn handle_client_message(&mut self, message: ClientMessage) -> Result<()> {
         match message {
             ClientMessage::Request {
