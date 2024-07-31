@@ -20,7 +20,9 @@ tracing = "0.1.40"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["tokio"] }
+futures = "0.3.30"
 lazy_static = "1.5.0"
+msgpack-rpc = "0.4.2"
 tempfile = "3.10.1"
 tracing-test = "0.2.5"
 
