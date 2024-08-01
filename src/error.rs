@@ -7,7 +7,7 @@ use thiserror::Error;
 pub enum RpcError {
     /// Error occurred during I/O operations.
     #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    Io(io::Error),
 
     /// Error occurred during MessagePack serialization.
     #[error("Serialization error: {0}")]
@@ -24,6 +24,9 @@ pub enum RpcError {
     /// Error returned by the RPC service implementation.
     #[error("Service error: {0}")]
     Service(ServiceError),
+
+    #[error("Connection disconnected")]
+    Disconnect,
 }
 
 /// An error that occurred during the execution of an RPC service method.
@@ -53,6 +56,17 @@ impl From<ServiceError> for Value {
             ),
             (Value::String("value".into()), error.value),
         ])
+    }
+}
+
+// Also add this impl to convert io::Error to RpcError::Disconnect
+impl From<std::io::Error> for RpcError {
+    fn from(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            RpcError::Disconnect
+        } else {
+            RpcError::Io(error)
+        }
     }
 }
 

@@ -172,8 +172,16 @@ where
                 let (sender, receiver) = mpsc::channel(100);
                 let mut handler =
                     ConnectionHandler::new(rpc_conn, connection, receiver, sender.clone());
-                if let Err(e) = handler.run().await {
-                    tracing::error!("Connection error: {}", e);
+                match handler.run().await {
+                    Ok(()) => {
+                        tracing::info!("Connection handler finished successfully");
+                    }
+                    Err(RpcError::Disconnect) => {
+                        tracing::info!("Client disconnected");
+                    }
+                    Err(e) => {
+                        tracing::error!("Connection error: {}", e);
+                    }
                 }
             });
         }
@@ -216,7 +224,14 @@ impl<T: Connection> Client<T> {
         let mut handler = ConnectionHandler::new(connection, service, receiver, sender);
         let handler_task = tokio::spawn(async move {
             if let Err(e) = handler.run().await {
-                tracing::error!("Handler error: {}", e);
+                match e {
+                    RpcError::Disconnect => {
+                        tracing::info!("Client disconnected");
+                    }
+                    e => {
+                        tracing::error!("Handler error: {}", e);
+                    }
+                }
             }
         });
 

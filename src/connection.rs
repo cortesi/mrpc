@@ -126,6 +126,9 @@ where
                         Ok(message) => {
                             if let Err(e) = self.handle_incoming_message(message).await {
                                 error!("Error handling incoming message: {}", e);
+                                if matches!(e, RpcError::Disconnect) {
+                                    return Err(e);
+                                }
                             }
                         }
                         Err(e) => {

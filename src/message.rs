@@ -157,9 +157,14 @@ impl Message {
 
     /// Reads and decodes a message from MessagePack format using the given reader.
     pub fn decode<R: Read>(reader: &mut R) -> Result<Self> {
-        let value = rmpv::decode::read_value(reader)?;
-        let message = Self::from_value(value)?;
-        Ok(message)
+        match rmpv::decode::read_value(reader) {
+            Ok(value) => Self::from_value(value),
+            Err(rmpv::decode::Error::InvalidMarkerRead(e))
+            | Err(rmpv::decode::Error::InvalidDataRead(e)) => Err(RpcError::from(e)),
+            Err(rmpv::decode::Error::DepthLimitExceeded) => {
+                Err(RpcError::Protocol("Depth limit exceeded".into()))
+            }
+        }
     }
 }
 
