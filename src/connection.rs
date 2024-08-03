@@ -4,14 +4,13 @@
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use rmpv::Value;
 use tokio::runtime::Handle;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot},
 };
 use tokio_util::io::SyncIoBridge;
 
@@ -76,7 +75,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     connection: RpcConnection<S>,
-    service: Arc<Mutex<T>>,
+    service: T,
     client_receiver: mpsc::Receiver<ClientMessage>,
     rpc_sender: RpcSender,
 }
@@ -93,7 +92,7 @@ where
     ) -> Self {
         Self {
             connection,
-            service: Arc::new(Mutex::new(service)),
+            service,
             client_receiver,
             rpc_sender: RpcSender {
                 sender: client_sender,
@@ -104,11 +103,11 @@ where
     pub async fn run(&mut self) -> Result<()> {
         let (connected_tx, mut connected_rx) = tokio::sync::oneshot::channel();
         let rpc_sender_clone = self.rpc_sender.clone();
-        let service_clone = self.service.clone();
 
         // Spawn the connected method in a separate task
+        let mut service_clone = self.service.clone();
         tokio::spawn(async move {
-            let result = service_clone.lock().await.connected(rpc_sender_clone).await;
+            let result = service_clone.connected(rpc_sender_clone).await;
             let _ = connected_tx.send(result);
         });
 
@@ -166,8 +165,6 @@ where
             Message::Request(request) => {
                 let result = self
                     .service
-                    .lock()
-                    .await
                     .handle_request(self.rpc_sender.clone(), &request.method, request.params)
                     .await;
                 let response = match result {
@@ -197,8 +194,6 @@ where
             Message::Notification(notification) => {
                 if let Err(e) = self
                     .service
-                    .lock()
-                    .await
                     .handle_notification(
                         self.rpc_sender.clone(),
                         &notification.method,
@@ -329,7 +324,7 @@ where
 /// Use the `#[async_trait]` attribute from the `async_trait` crate when
 /// implementing this trait to support async methods.
 #[async_trait]
-pub trait Connection: Send + Sync + 'static {
+pub trait Connection: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&mut self, _client: RpcSender) -> Result<()> {
@@ -340,7 +335,7 @@ pub trait Connection: Send + Sync + 'static {
     ///
     /// By default, returns an error indicating the method is not implemented.
     async fn handle_request(
-        &mut self,
+        &self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,
@@ -356,7 +351,7 @@ pub trait Connection: Send + Sync + 'static {
     ///
     /// By default, logs a warning about the unhandled notification.
     async fn handle_notification(
-        &mut self,
+        &self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,

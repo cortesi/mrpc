@@ -7,12 +7,13 @@ use tokio::time::timeout;
 
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server, ServiceError, Value};
 
+#[derive(Clone)]
 struct TestServer;
 
 #[async_trait]
 impl Connection for TestServer {
     async fn handle_request(
-        &mut self,
+        &self,
         _: RpcSender,
         method: &str,
         params: Vec<Value>,
@@ -39,6 +40,7 @@ impl Connection for TestServer {
     }
 }
 
+#[derive(Clone)]
 struct TestClient;
 
 impl Default for TestClient {
@@ -50,6 +52,7 @@ impl Default for TestClient {
 #[async_trait]
 impl Connection for TestClient {}
 
+#[derive(Clone)]
 struct TestClientConnect {
     connected_success: Arc<Mutex<bool>>,
 }

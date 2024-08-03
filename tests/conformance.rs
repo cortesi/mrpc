@@ -16,7 +16,7 @@ struct PingPongService {
 #[async_trait]
 impl Connection for PingPongService {
     async fn handle_request(
-        &mut self,
+        &self,
         _client: RpcSender,
         method: &str,
         params: Vec<Value>,

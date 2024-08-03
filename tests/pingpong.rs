@@ -21,7 +21,7 @@ impl Connection for PingService {
     }
 
     async fn handle_request(
-        &mut self,
+        &self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
@@ -33,7 +33,7 @@ impl Connection for PingService {
     }
 
     async fn handle_notification(
-        &mut self,
+        &self,
         _sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
@@ -60,7 +60,7 @@ impl Connection for PongService {
     }
 
     async fn handle_request(
-        &mut self,
+        &self,
         sender: RpcSender,
         method: &str,
         _params: Vec<Value>,
