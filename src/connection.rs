@@ -105,7 +105,7 @@ where
         let rpc_sender_clone = self.rpc_sender.clone();
 
         // Spawn the connected method in a separate task
-        let mut service_clone = self.service.clone();
+        let service_clone = self.service.clone();
         tokio::spawn(async move {
             let result = service_clone.connected(rpc_sender_clone).await;
             let _ = connected_tx.send(result);
@@ -327,7 +327,7 @@ where
 pub trait Connection: Send + Sync + Clone + 'static {
     /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
-    async fn connected(&mut self, _client: RpcSender) -> Result<()> {
+    async fn connected(&self, _client: RpcSender) -> Result<()> {
         Ok(())
     }
 

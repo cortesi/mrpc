@@ -73,7 +73,7 @@ impl Default for TestClientConnect {
 
 #[async_trait]
 impl Connection for TestClientConnect {
-    async fn connected(&mut self, client: RpcSender) -> Result<()> {
+    async fn connected(&self, client: RpcSender) -> Result<()> {
         // Send a message during connection
         let result = client
             .send_request("add", &[Value::from(10), Value::from(20)])

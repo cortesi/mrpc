@@ -14,7 +14,7 @@ struct PingService {
 
 #[async_trait]
 impl Connection for PingService {
-    async fn connected(&mut self, _client: RpcSender) -> mrpc::Result<()> {
+    async fn connected(&self, _client: RpcSender) -> mrpc::Result<()> {
         let mut count = self.connected_count.lock().await;
         *count += 1;
         Ok(())
@@ -53,7 +53,7 @@ struct PongService {
 
 #[async_trait]
 impl Connection for PongService {
-    async fn connected(&mut self, _client: RpcSender) -> mrpc::Result<()> {
+    async fn connected(&self, _client: RpcSender) -> mrpc::Result<()> {
         let mut count = self.connected_count.lock().await;
         *count += 1;
         Ok(())
