@@ -112,6 +112,7 @@ where
         });
 
         let mut connected_done = false;
+        let mut receiver = self.connection.receiver();
 
         loop {
             tokio::select! {
@@ -120,7 +121,7 @@ where
                         error!("Error handling client message: {}", e);
                     }
                 }
-                Some(message_result) = self.connection.message_receiver.recv() => {
+                Some(message_result) = receiver.recv() => {
                     match message_result {
                         Ok(message) => {
                             if let Err(e) = self.handle_incoming_message(message).await {
@@ -192,49 +193,17 @@ where
                     .await?;
             }
             Message::Notification(notification) => {
-                if let Err(e) = self
-                    .service
+                self.service
                     .handle_notification(
                         self.rpc_sender.clone(),
                         &notification.method,
                         notification.params,
                     )
-                    .await
-                {
-                    warn!("Error handling notification: {}", e);
-                }
+                    .await?;
             }
             Message::Response(response) => {
-                if let Some(sender) = self.connection.pending_requests.remove(&response.id) {
-                    let _ = sender.send(response.result.map_err(|e| {
-                        if let Value::Map(map) = e {
-                            if let (Some(Value::String(name)), Some(value)) = (
-                                map.iter()
-                                    .find(|(k, _)| k == &Value::from("name"))
-                                    .map(|(_, v)| v),
-                                map.iter()
-                                    .find(|(k, _)| k == &Value::from("value"))
-                                    .map(|(_, v)| v),
-                            ) {
-                                RpcError::Service(ServiceError {
-                                    name: name.as_str().unwrap().to_string(),
-                                    value: value.clone(),
-                                })
-                            } else {
-                                RpcError::Service(ServiceError {
-                                    name: "UnknownError".to_string(),
-                                    value: Value::Map(map),
-                                })
-                            }
-                        } else {
-                            RpcError::Service(ServiceError {
-                                name: "RemoteError".to_string(),
-                                value: e,
-                            })
-                        }
-                    }));
-                } else {
-                    warn!("Received response for unknown request id: {}", response.id);
+                if let Err(e) = self.connection.handle_response(response) {
+                    warn!("error handling response: {}", e);
                 }
             }
         }
@@ -248,19 +217,12 @@ where
                 params,
                 response_sender,
             } => {
-                let id = self.connection.next_request_id;
-                self.connection.next_request_id += 1;
-                self.connection.pending_requests.insert(id, response_sender);
-                let request = Request { id, method, params };
                 self.connection
-                    .write_message(&Message::Request(request))
+                    .send_request(method, params, response_sender)
                     .await?;
             }
             ClientMessage::Notification { method, params } => {
-                let notification = Notification { method, params };
-                self.connection
-                    .write_message(&Message::Notification(notification))
-                    .await?;
+                self.connection.send_notification(method, params).await?;
             }
         }
         Ok(())
@@ -368,14 +330,16 @@ pub trait Connection: Send + Sync + Clone + 'static {
 impl Connection for () {}
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
+
+#[derive(Debug)]
 pub(crate) struct RpcConnection<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    pub(crate) write_half: WriteHalf<S>,
-    pub(crate) next_request_id: u32,
-    pub(crate) pending_requests: std::collections::HashMap<u32, oneshot::Sender<Result<Value>>>,
-    pub(crate) message_receiver: mpsc::Receiver<Result<Message>>,
+    message_receiver: Option<mpsc::Receiver<Result<Message>>>,
+    write_half: WriteHalf<S>,
+    next_request_id: u32,
+    pending_requests: std::collections::HashMap<u32, oneshot::Sender<Result<Value>>>,
 }
 
 impl<S> RpcConnection<S>
@@ -411,7 +375,51 @@ where
             write_half,
             next_request_id: 1,
             pending_requests: std::collections::HashMap::new(),
-            message_receiver,
+            message_receiver: Some(message_receiver),
+        }
+    }
+
+    pub fn receiver(&mut self) -> mpsc::Receiver<Result<Message>> {
+        self.message_receiver
+            .take()
+            .expect("Receiver already taken")
+    }
+
+    pub fn handle_response(&mut self, response: Response) -> Result<()> {
+        if let Some(sender) = self.pending_requests.remove(&response.id) {
+            let _ = sender.send(response.result.map_err(|e| {
+                if let Value::Map(map) = e {
+                    if let (Some(Value::String(name)), Some(value)) = (
+                        map.iter()
+                            .find(|(k, _)| k == &Value::from("name"))
+                            .map(|(_, v)| v),
+                        map.iter()
+                            .find(|(k, _)| k == &Value::from("value"))
+                            .map(|(_, v)| v),
+                    ) {
+                        RpcError::Service(ServiceError {
+                            name: name.as_str().unwrap().to_string(),
+                            value: value.clone(),
+                        })
+                    } else {
+                        RpcError::Service(ServiceError {
+                            name: "UnknownError".to_string(),
+                            value: Value::Map(map),
+                        })
+                    }
+                } else {
+                    RpcError::Service(ServiceError {
+                        name: "RemoteError".to_string(),
+                        value: e,
+                    })
+                }
+            }));
+            Ok(())
+        } else {
+            Err(RpcError::Protocol(format!(
+                "Received response for unknown request id: {}",
+                response.id
+            )))
         }
     }
 
@@ -423,5 +431,24 @@ where
         self.write_half.write_all(&buffer).await?;
         self.write_half.flush().await?;
         Ok(())
+    }
+
+    pub async fn send_request(
+        &mut self,
+        method: String,
+        params: Vec<Value>,
+        response_sender: oneshot::Sender<Result<Value>>,
+    ) -> Result<()> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.pending_requests.insert(id, response_sender);
+        let request = Request { id, method, params };
+        self.write_message(&Message::Request(request)).await
+    }
+
+    pub async fn send_notification(&mut self, method: String, params: Vec<Value>) -> Result<()> {
+        let notification = Notification { method, params };
+        self.write_message(&Message::Notification(notification))
+            .await
     }
 }
