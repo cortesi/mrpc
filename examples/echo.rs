@@ -18,10 +18,11 @@ impl Connection for Echo {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // We're just using the default constructor as our ConnectionMaker
+    // Using the default constructor as our ConnectionMaker
     let server = Server::from_fn(Echo::default).tcp("127.0.0.1:0").await?;
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.run());
+
     // `Connection` is implemented for (), as a convenience for clients who don't need to handle
     // requests or responses.
     let client = Client::connect_tcp(&addr.to_string(), ()).await?;
