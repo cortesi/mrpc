@@ -46,7 +46,7 @@ fn bench_echo(c: &mut Criterion) {
                 let (socket_path, _temp_dir) = create_unix_socket_path();
 
                 let socket_path_clone = socket_path.clone();
-                let server = Server::from_closure(BenchService::default)
+                let server = Server::from_fn(BenchService::default)
                     .unix(socket_path_clone)
                     .await
                     .unwrap();
@@ -79,7 +79,7 @@ fn bench_add(c: &mut Criterion) {
                 let (socket_path, _temp_dir) = create_unix_socket_path();
 
                 let socket_path_clone = socket_path.clone();
-                let server = Server::from_closure(BenchService::default)
+                let server = Server::from_fn(BenchService::default)
                     .unix(socket_path_clone)
                     .await
                     .unwrap();

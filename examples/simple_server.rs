@@ -33,7 +33,7 @@ async fn main() -> std::result::Result<(), Box<dyn Error>> {
     if std::path::Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path)?;
     }
-    let server = Server::from_closure(SimpleService::default)
+    let server = Server::from_fn(SimpleService::default)
         .unix(socket_path)
         .await?;
     println!("Server listening on {}", socket_path);

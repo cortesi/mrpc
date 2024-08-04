@@ -60,7 +60,7 @@ async fn test_rpc_service() -> Result<(), Box<dyn std::error::Error>> {
     let val = Arc::new(Mutex::new(0));
     let inner = val.clone();
     // Set up the server
-    let server = Server::from_closure(move || TestService {
+    let server = Server::from_fn(move || TestService {
         notification_count: inner.clone(),
     })
     .unix(&socket_path)

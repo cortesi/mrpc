@@ -90,9 +90,7 @@ impl Connection for TestClientConnect {
 
 async fn setup_server_and_client<T: Connection + Default>(
 ) -> Result<(Client<T>, Server<TestServer>)> {
-    let server = Server::from_closure(|| TestServer)
-        .tcp("127.0.0.1:0")
-        .await?;
+    let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
     let addr = server.local_addr()?;
 
     let _server_handle = tokio::spawn(async move {
@@ -101,7 +99,7 @@ async fn setup_server_and_client<T: Connection + Default>(
 
     let client = Client::connect_tcp(&addr.to_string(), T::default()).await?;
 
-    Ok((client, Server::from_closure(|| TestServer)))
+    Ok((client, Server::from_fn(|| TestServer)))
 }
 
 async fn setup_server_and_client_with_connect() -> Result<(
@@ -112,9 +110,7 @@ async fn setup_server_and_client_with_connect() -> Result<(
     let test_client = TestClientConnect::new();
     let connected_success = test_client.connected_success.clone();
 
-    let server = Server::from_closure(|| TestServer)
-        .tcp("127.0.0.1:0")
-        .await?;
+    let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
     let addr = server.local_addr()?;
 
     let _server_handle = tokio::spawn(async move {
@@ -123,11 +119,7 @@ async fn setup_server_and_client_with_connect() -> Result<(
 
     let client = Client::connect_tcp(&addr.to_string(), test_client).await?;
 
-    Ok((
-        client,
-        Server::from_closure(|| TestServer),
-        connected_success,
-    ))
+    Ok((client, Server::from_fn(|| TestServer), connected_success))
 }
 
 #[tokio::test]

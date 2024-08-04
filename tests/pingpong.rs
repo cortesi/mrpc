@@ -87,7 +87,7 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = temp_dir.path().join("pong.sock");
 
     // Set up the Pong server
-    let server: Server<PongService> = Server::from_closure(PongService::default)
+    let server: Server<PongService> = Server::from_fn(PongService::default)
         .unix(&socket_path)
         .await?;
     let pong_server_task = tokio::spawn(async move {

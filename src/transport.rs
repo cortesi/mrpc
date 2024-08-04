@@ -17,8 +17,8 @@ use tracing::trace;
 
 use crate::error::*;
 use crate::{
-    ClosureConnectionMaker, Connection, ConnectionHandler, ConnectionMaker, RpcConnection,
-    RpcSender, Value,
+    Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
+    Value,
 };
 
 /// TCP listener for accepting RPC connections.
@@ -117,11 +117,11 @@ where
     }
 
     /// Helper method to create a Server from a closure
-    pub fn from_closure<F>(f: F) -> Self
+    pub fn from_fn<F>(f: F) -> Self
     where
         F: Fn() -> T + Send + Sync + 'static,
     {
-        Self::from_maker(ClosureConnectionMaker::new(f))
+        Self::from_maker(ConnectionMakerFn::new(f))
     }
 
     /// Returns the bound address of the server. Only valid for TCP listeners that have already

@@ -281,29 +281,29 @@ where
 }
 
 // ClosureConnectionMaker implementation (assuming it's already defined)
-pub struct ClosureConnectionMaker<F, T>
+pub struct ConnectionMakerFn<F, T>
 where
-    F: Fn() -> T + Send + Sync,
+    F: FnMut() -> T + Send + Sync,
     T: Connection,
 {
     make_fn: F,
     _phantom: PhantomData<T>,
 }
 
-impl<F, T> ClosureConnectionMaker<F, T>
+impl<F, T> ConnectionMakerFn<F, T>
 where
     F: Fn() -> T + Send + Sync,
     T: Connection,
 {
     pub fn new(make_fn: F) -> Self {
-        ClosureConnectionMaker {
+        ConnectionMakerFn {
             make_fn,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<F, T> ConnectionMaker<T> for ClosureConnectionMaker<F, T>
+impl<F, T> ConnectionMaker<T> for ConnectionMakerFn<F, T>
 where
     F: Fn() -> T + Send + Sync,
     T: Connection,
@@ -313,19 +313,19 @@ where
     }
 }
 
-/// The interface for implementing RPC service functionality.
+/// A single Connection in an RPC server or client. For server connections, a new instance of the
+/// Connection is created for each incoming connection. For clients, a single instance is used for
+/// the lifetime of the connection.
 ///
-/// This trait allows you to create custom RPC services by implementing
-/// methods to handle requests, notifications, and connection events.
+/// As a convencience for clients that don't need to handle requests or responses, the `Connection`
+/// trait is implemented for `()`, and the `Client` type exposes `send_request` and
+/// `send_notification` directly.
 ///
-/// Implementations of this trait can be used with the `Server` and `Client`
-/// types to create RPC servers and clients.
-///
-/// Use the `#[async_trait]` attribute from the `async_trait` crate when
-/// implementing this trait to support async methods.
+/// Use the `#[async_trait]` attribute from the `async_trait` crate when implementing this trait to
+/// support async methods.
 #[async_trait]
 pub trait Connection: Send + Sync + Clone + 'static {
-    /// Called after a connection is intiated, either by ai `Client` connecting outbound, or an
+    /// Called after a connection is intiated, either by a `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&self, _client: RpcSender) -> Result<()> {
         Ok(())
@@ -364,6 +364,8 @@ pub trait Connection: Send + Sync + Clone + 'static {
         Ok(())
     }
 }
+
+impl Connection for () {}
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
 pub(crate) struct RpcConnection<S>

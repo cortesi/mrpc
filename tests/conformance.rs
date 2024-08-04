@@ -47,7 +47,7 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn std::e
     let pong_counter = Arc::new(Mutex::new(0_u32));
     let pong_counter_clone = pong_counter.clone();
 
-    let server: Server<PingPongService> = Server::from_closure(move || PingPongService {
+    let server: Server<PingPongService> = Server::from_fn(move || PingPongService {
         pong_counter: pong_counter_clone.clone(),
     })
     .unix(&socket_path)

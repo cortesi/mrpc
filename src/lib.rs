@@ -7,13 +7,13 @@
 //! communication.
 //!
 //! To implement a server:
-//! 1. Implement the `RpcService` trait
+//! 1. Implement the `Connection` trait
 //! 2. Create a `Server` with the service
 //! 3. Call `server.tcp(addr)` or `server.unix(path)`
 //! 4. Call `server.run()`
 //!
 //! To implement a client:
-//! 1. Implement the `RpcService` trait (possibly empty)
+//! 1. Implement the `Connection` trait
 //! 2. Create a `Client` via `Client::connect_tcp(addr)` or `Client::connect_unix(path)`
 //! 3. Use `client.send_request()` or `client.send_notification()`
 
