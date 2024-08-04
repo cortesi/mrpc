@@ -170,9 +170,8 @@ where
             let connection = self.connection_maker.make_connection();
             tokio::spawn(async move {
                 let (sender, receiver) = mpsc::channel(100);
-                let mut handler =
-                    ConnectionHandler::new(rpc_conn, connection, receiver, sender.clone());
-                match handler.run().await {
+                let mut handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
+                match handler.run(receiver).await {
                     Ok(()) => {
                         tracing::info!("Connection handler finished successfully");
                     }
@@ -221,9 +220,9 @@ impl<T: Connection> Client<T> {
         let rpc_sender = RpcSender {
             sender: sender.clone(),
         };
-        let mut handler = ConnectionHandler::new(connection, service, receiver, sender);
+        let mut handler = ConnectionHandler::new(connection, service, sender);
         let handler_task = tokio::spawn(async move {
-            if let Err(e) = handler.run().await {
+            if let Err(e) = handler.run(receiver).await {
                 match e {
                     RpcError::Disconnect => {
                         tracing::info!("Client disconnected");

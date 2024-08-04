@@ -4,13 +4,14 @@
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rmpv::Value;
 use tokio::runtime::Handle;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, Mutex},
 };
 use tokio_util::io::SyncIoBridge;
 
@@ -74,9 +75,8 @@ pub(crate) struct ConnectionHandler<S, T: Connection>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    connection: RpcConnection<S>,
+    connection: Arc<Mutex<RpcConnection<S>>>,
     service: T,
-    client_receiver: mpsc::Receiver<ClientMessage>,
     rpc_sender: RpcSender,
 }
 
@@ -87,20 +87,18 @@ where
     pub fn new(
         connection: RpcConnection<S>,
         service: T,
-        client_receiver: mpsc::Receiver<ClientMessage>,
         client_sender: mpsc::Sender<ClientMessage>,
     ) -> Self {
         Self {
-            connection,
+            connection: Arc::new(Mutex::new(connection)),
             service,
-            client_receiver,
             rpc_sender: RpcSender {
                 sender: client_sender,
             },
         }
     }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
         let (connected_tx, mut connected_rx) = tokio::sync::oneshot::channel();
         let rpc_sender_clone = self.rpc_sender.clone();
 
@@ -112,15 +110,19 @@ where
         });
 
         let mut connected_done = false;
-        let mut receiver = self.connection.receiver();
+        let mut receiver = {
+            let mut conn = self.connection.lock().await;
+            conn.receiver()
+        };
+
+        // Spawn a task to handle client messages
+        let connection_clone = self.connection.clone();
+        let client_handler = tokio::spawn(async move {
+            handle_client_messages(connection_clone, client_receiver).await;
+        });
 
         loop {
             tokio::select! {
-                Some(client_message) = self.client_receiver.recv() => {
-                    if let Err(e) = self.handle_client_message(client_message).await {
-                        error!("Error handling client message: {}", e);
-                    }
-                }
                 Some(message_result) = receiver.recv() => {
                     match message_result {
                         Ok(message) => {
@@ -158,10 +160,13 @@ where
             }
         }
 
+        // Cancel the client handler task
+        client_handler.abort();
+
         Ok(())
     }
 
-    async fn handle_incoming_message(&mut self, message: Message) -> Result<()> {
+    async fn handle_incoming_message(&self, message: Message) -> Result<()> {
         match message {
             Message::Request(request) => {
                 let result = self
@@ -188,9 +193,8 @@ where
                         }
                     }
                 };
-                self.connection
-                    .write_message(&Message::Response(response))
-                    .await?;
+                let mut conn = self.connection.lock().await;
+                conn.write_message(&Message::Response(response)).await?;
             }
             Message::Notification(notification) => {
                 self.service
@@ -202,31 +206,54 @@ where
                     .await?;
             }
             Message::Response(response) => {
-                if let Err(e) = self.connection.handle_response(response) {
+                println!("Received response: {:?}", response);
+                let mut conn = self.connection.lock().await;
+                println!("Handling response");
+                if let Err(e) = conn.handle_response(response) {
                     warn!("error handling response: {}", e);
                 }
             }
         }
         Ok(())
     }
+}
 
-    async fn handle_client_message(&mut self, message: ClientMessage) -> Result<()> {
-        match message {
-            ClientMessage::Request {
-                method,
-                params,
-                response_sender,
-            } => {
-                self.connection
-                    .send_request(method, params, response_sender)
-                    .await?;
-            }
-            ClientMessage::Notification { method, params } => {
-                self.connection.send_notification(method, params).await?;
-            }
+async fn handle_client_messages<S>(
+    connection: Arc<Mutex<RpcConnection<S>>>,
+    mut client_receiver: mpsc::Receiver<ClientMessage>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    while let Some(message) = client_receiver.recv().await {
+        let mut conn = connection.lock().await;
+        if let Err(e) = handle_client_message(&mut conn, message).await {
+            error!("Error handling client message: {}", e);
         }
-        Ok(())
     }
+}
+
+async fn handle_client_message<S>(
+    connection: &mut RpcConnection<S>,
+    message: ClientMessage,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    match message {
+        ClientMessage::Request {
+            method,
+            params,
+            response_sender,
+        } => {
+            connection
+                .send_request(method, params, response_sender)
+                .await?;
+        }
+        ClientMessage::Notification { method, params } => {
+            connection.send_notification(method, params).await?;
+        }
+    }
+    Ok(())
 }
 
 /// A trait for creating connections.
@@ -330,7 +357,6 @@ pub trait Connection: Send + Sync + Clone + 'static {
 impl Connection for () {}
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
-
 #[derive(Debug)]
 pub(crate) struct RpcConnection<S>
 where
