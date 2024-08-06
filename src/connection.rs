@@ -115,23 +115,34 @@ where
             conn.receiver()
         };
 
-        // Spawn a task to handle client messages
+        // Clone Arc<Mutex<RpcConnection>> for the client message handling task
         let connection_clone = self.connection.clone();
+
+        // Spawn a task to handle client messages
         let client_handler = tokio::spawn(async move {
             handle_client_messages(connection_clone, client_receiver).await;
         });
+
+        let mut incoming_handlers = Vec::new();
 
         loop {
             tokio::select! {
                 Some(message_result) = receiver.recv() => {
                     match message_result {
                         Ok(message) => {
-                            if let Err(e) = self.handle_incoming_message(message).await {
-                                error!("Error handling incoming message: {}", e);
-                                if matches!(e, RpcError::Disconnect) {
-                                    return Err(e);
+                            let connection = self.connection.clone();
+                            let service = self.service.clone();
+                            let rpc_sender = self.rpc_sender.clone();
+                            let handler = tokio::spawn(async move {
+                                if let Err(e) = handle_incoming_message(connection, service, rpc_sender, message).await {
+                                    error!("Error handling incoming message: {}", e);
+                                    if matches!(e, RpcError::Disconnect) {
+                                        return Err(e);
+                                    }
                                 }
-                            }
+                                Ok(())
+                            });
+                            incoming_handlers.push(handler);
                         }
                         Err(e) => {
                             return Err(e);
@@ -163,59 +174,72 @@ where
         // Cancel the client handler task
         client_handler.abort();
 
-        Ok(())
-    }
-
-    async fn handle_incoming_message(&self, message: Message) -> Result<()> {
-        match message {
-            Message::Request(request) => {
-                let result = self
-                    .service
-                    .handle_request(self.rpc_sender.clone(), &request.method, request.params)
-                    .await;
-                let response = match result {
-                    Ok(value) => Response {
-                        id: request.id,
-                        result: Ok(value),
-                    },
-                    Err(RpcError::Service(service_error)) => {
-                        warn!("Service error: {}", service_error);
-                        Response {
-                            id: request.id,
-                            result: Err(service_error.into()),
-                        }
-                    }
-                    Err(e) => {
-                        warn!("RPC error: {}", e);
-                        Response {
-                            id: request.id,
-                            result: Err(Value::String(format!("Internal error: {}", e).into())),
-                        }
-                    }
-                };
-                let mut conn = self.connection.lock().await;
-                conn.write_message(&Message::Response(response)).await?;
-            }
-            Message::Notification(notification) => {
-                self.service
-                    .handle_notification(
-                        self.rpc_sender.clone(),
-                        &notification.method,
-                        notification.params,
-                    )
-                    .await?;
-            }
-            Message::Response(response) => {
-                println!("Received response: {:?}", response);
-                let mut conn = self.connection.lock().await;
-                println!("Handling response");
-                if let Err(e) = conn.handle_response(response) {
-                    warn!("error handling response: {}", e);
-                }
+        // Wait for all incoming message handlers to complete
+        for handler in incoming_handlers {
+            if let Err(e) = handler.await {
+                error!("Error joining incoming message handler: {}", e);
             }
         }
+
         Ok(())
     }
+}
+
+async fn handle_incoming_message<S, T>(
+    connection: Arc<Mutex<RpcConnection<S>>>,
+    service: T,
+    rpc_sender: RpcSender,
+    message: Message,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: Connection,
+{
+    match message {
+        Message::Request(request) => {
+            let result = service
+                .handle_request(rpc_sender.clone(), &request.method, request.params)
+                .await;
+            let response = match result {
+                Ok(value) => Response {
+                    id: request.id,
+                    result: Ok(value),
+                },
+                Err(RpcError::Service(service_error)) => {
+                    warn!("Service error: {}", service_error);
+                    Response {
+                        id: request.id,
+                        result: Err(service_error.into()),
+                    }
+                }
+                Err(e) => {
+                    warn!("RPC error: {}", e);
+                    Response {
+                        id: request.id,
+                        result: Err(Value::String(format!("Internal error: {}", e).into())),
+                    }
+                }
+            };
+            let mut conn = connection.lock().await;
+            conn.write_message(&Message::Response(response)).await?;
+        }
+        Message::Notification(notification) => {
+            service
+                .handle_notification(
+                    rpc_sender.clone(),
+                    &notification.method,
+                    notification.params,
+                )
+                .await?;
+        }
+        Message::Response(response) => {
+            let mut conn = connection.lock().await;
+            if let Err(e) = conn.handle_response(response) {
+                warn!("error handling response: {}", e);
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn handle_client_messages<S>(

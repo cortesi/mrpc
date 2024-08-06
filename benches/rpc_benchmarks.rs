@@ -11,7 +11,7 @@ struct BenchService;
 #[async_trait::async_trait]
 impl Connection for BenchService {
     async fn handle_request(
-        &mut self,
+        &self,
         _: RpcSender,
         method: &str,
         params: Vec<Value>,
