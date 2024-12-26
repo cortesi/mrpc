@@ -130,7 +130,7 @@ where
         match &self.listener {
             Some(Listener::Tcp(tcp_listener)) => Ok(tcp_listener.inner.local_addr()?),
             Some(Listener::Unix(_)) => Err(RpcError::Protocol(
-                "Unix sockets don't have a SocketAddr".into(),
+                "unix sockets don't have a SocketAddr".into(),
             )),
             None => Err(RpcError::Protocol("No listener configured".into())),
         }
@@ -200,14 +200,18 @@ impl<T: Connection> Client<T> {
     /// Creates a new client connected to a Unix domain socket.
     pub async fn connect_unix<P: AsRef<Path>>(path: P, service: T) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
-        let stream = UnixStream::connect(path).await?;
+        let stream = UnixStream::connect(path)
+            .await
+            .map_err(|_e| RpcError::Connect(format!("unix socket at {}", path_str)))?;
         trace!("Unix connection established to: {:?}", path_str);
         Self::new(RpcConnection::new(stream), service).await
     }
 
     /// Creates a new client connected to a TCP address.
     pub async fn connect_tcp(addr: &str, service: T) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|_e| RpcError::Connect(addr.to_string()))?;
         trace!("TCP connection established to: {}", addr);
         Self::new(RpcConnection::new(stream), service).await
     }

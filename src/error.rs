@@ -27,6 +27,10 @@ pub enum RpcError {
 
     #[error("Connection disconnected")]
     Disconnect,
+
+    /// Error occurred while trying to establish a connection.
+    #[error("Failed to connect to {0}")]
+    Connect(String),
 }
 
 /// An error that occurred during the execution of an RPC service method.
@@ -59,7 +63,6 @@ impl From<ServiceError> for Value {
     }
 }
 
-// Also add this impl to convert io::Error to RpcError::Disconnect
 impl From<std::io::Error> for RpcError {
     fn from(error: std::io::Error) -> Self {
         if error.kind() == std::io::ErrorKind::UnexpectedEof {
