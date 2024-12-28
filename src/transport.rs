@@ -192,7 +192,7 @@ where
 pub struct Client<T: Connection> {
     /// Sender for sending RPC requests and notifications.
     pub sender: RpcSender,
-    _handler: Arc<tokio::task::JoinHandle<()>>,
+    handle: tokio::task::JoinHandle<()>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -240,7 +240,7 @@ impl<T: Connection> Client<T> {
 
         Ok(Self {
             sender: rpc_sender,
-            _handler: Arc::new(handler_task),
+            handle: handler_task,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -254,5 +254,13 @@ impl<T: Connection> Client<T> {
     /// `RpcSender::send_notification`.
     pub async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
         self.sender.send_notification(method, params).await
+    }
+
+    /// Waits for the client handler task to complete.
+    pub async fn join(self) -> Result<()> {
+        self.handle
+            .await
+            .map_err(|e| RpcError::Protocol(e.to_string()))?;
+        Ok(())
     }
 }
