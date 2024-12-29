@@ -1,4 +1,4 @@
-v0.0.t
+v0.0.5
 - Add Client::join
 
 v0.0.4
