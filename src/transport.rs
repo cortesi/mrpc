@@ -173,13 +173,13 @@ where
                 let mut handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
                 match handler.run(receiver).await {
                     Ok(()) => {
-                        tracing::info!("Connection handler finished successfully");
+                        tracing::trace!("Connection handler finished successfully");
                     }
                     Err(RpcError::Disconnect) => {
-                        tracing::info!("Client disconnected");
+                        tracing::trace!("Client disconnected");
                     }
                     Err(e) => {
-                        tracing::error!("Connection error: {}", e);
+                        tracing::warn!("Connection error: {}", e);
                     }
                 }
             });
@@ -229,10 +229,10 @@ impl<T: Connection> Client<T> {
             if let Err(e) = handler.run(receiver).await {
                 match e {
                     RpcError::Disconnect => {
-                        tracing::info!("Client disconnected");
+                        tracing::trace!("Client disconnected");
                     }
                     e => {
-                        tracing::error!("Handler error: {}", e);
+                        tracing::warn!("Handler error: {}", e);
                     }
                 }
             }
