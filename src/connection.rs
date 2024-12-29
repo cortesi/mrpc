@@ -76,7 +76,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     connection: Arc<Mutex<RpcConnection<S>>>,
-    service: T,
+    service: Arc<T>,
     rpc_sender: RpcSender,
 }
 
@@ -91,7 +91,7 @@ where
     ) -> Self {
         Self {
             connection: Arc::new(Mutex::new(connection)),
-            service,
+            service: Arc::new(service),
             rpc_sender: RpcSender {
                 sender: client_sender,
             },
@@ -103,9 +103,9 @@ where
         let rpc_sender_clone = self.rpc_sender.clone();
 
         // Spawn the connected method in a separate task
-        let service_clone = self.service.clone();
+        let service = Arc::clone(&self.service);
         tokio::spawn(async move {
-            let result = service_clone.connected(rpc_sender_clone).await;
+            let result = service.connected(rpc_sender_clone).await;
             let _ = connected_tx.send(result);
         });
 
@@ -131,7 +131,7 @@ where
                     match message_result {
                         Ok(message) => {
                             let connection = self.connection.clone();
-                            let service = self.service.clone();
+                            let service = Arc::clone(&self.service);
                             let rpc_sender = self.rpc_sender.clone();
                             let handler = tokio::spawn(async move {
                                 if let Err(e) = handle_incoming_message(connection, service, rpc_sender, message).await {
@@ -187,7 +187,7 @@ where
 
 async fn handle_incoming_message<S, T>(
     connection: Arc<Mutex<RpcConnection<S>>>,
-    service: T,
+    service: Arc<T>,
     rpc_sender: RpcSender,
     message: Message,
 ) -> Result<()>
@@ -195,6 +195,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     T: Connection,
 {
+    let service = service.as_ref();
     match message {
         Message::Request(request) => {
             let result = service
@@ -337,7 +338,7 @@ where
 /// Use the `#[async_trait]` attribute from the `async_trait` crate when implementing this trait to
 /// support async methods.
 #[async_trait]
-pub trait Connection: Send + Sync + Clone + 'static {
+pub trait Connection: Send + Sync + 'static {
     /// Called after a connection is intiated, either by a `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&self, _client: RpcSender) -> Result<()> {
