@@ -216,6 +216,14 @@ impl<T: Connection> Client<T> {
         Self::new(RpcConnection::new(stream), service).await
     }
 
+    pub async fn connect_stream<S>(stream: S, service: T) -> Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        trace!("Stream connection established");
+        Self::new(RpcConnection::new(stream), service).await
+    }
+
     async fn new<S>(connection: RpcConnection<S>, service: T) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
