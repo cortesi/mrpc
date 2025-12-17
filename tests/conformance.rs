@@ -1,10 +1,14 @@
-use async_trait::async_trait;
-use std::sync::Arc;
-use tempfile::tempdir;
-use tokio::sync::Mutex;
-use tokio_util::compat::TokioAsyncReadCompatExt;
+//! Conformance tests for mrpc interoperability with the msgpack-rpc crate.
 
+#![allow(clippy::tests_outside_test_module)]
+
+use std::{error::Error, sync::Arc, time::Duration};
+
+use async_trait::async_trait;
 use mrpc::{Connection, Result as MrpcResult, RpcError, RpcSender, Server, Value};
+use tempfile::tempdir;
+use tokio::{net::UnixStream, sync::Mutex, time::sleep};
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 const PINGS: u32 = 3;
 
@@ -39,7 +43,7 @@ impl Connection for PingPongService {
 }
 
 #[tokio::test]
-async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn Error>> {
     let temp_dir = tempdir()?;
     let socket_path = temp_dir.path().join("pingpong.sock");
 
@@ -60,10 +64,10 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn std::e
     });
 
     // Give the server a moment to start up
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     // Create a msgpack-rpc client
-    let socket = tokio::net::UnixStream::connect(&socket_path).await?;
+    let socket = UnixStream::connect(&socket_path).await?;
     let client = msgpack_rpc::Client::new(socket.compat());
 
     for i in 0..PINGS {
@@ -72,11 +76,11 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn std::e
             .await
             .unwrap();
         // Add a small delay between requests
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
     }
 
     // Give more time for all pings to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    sleep(Duration::from_millis(500)).await;
 
     // Check if our server received 10 pings
     let final_count = *pong_counter.lock().await;

@@ -1,10 +1,14 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+//! Benchmarks for RPC operations.
+
+use std::{future::Future, hint::black_box, path::PathBuf};
+
+use criterion::{criterion_group, criterion_main, Criterion};
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server};
 use rmpv::Value;
-use std::path::PathBuf;
 use tempfile::tempdir;
 use tokio::runtime::Runtime;
 
+/// A simple service for benchmarking RPC operations.
 #[derive(Clone, Default)]
 struct BenchService;
 
@@ -28,17 +32,20 @@ impl Connection for BenchService {
     }
 }
 
+/// Creates a temporary Unix socket path for benchmarking.
 fn create_unix_socket_path() -> (PathBuf, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let path = dir.path().join("benchmark.sock");
     (path, dir)
 }
 
-fn run_in_tokio<F: std::future::Future>(f: F) -> F::Output {
+/// Runs an async future in a new tokio runtime.
+fn run_in_tokio<F: Future>(f: F) -> F::Output {
     let rt = Runtime::new().unwrap();
     rt.block_on(f)
 }
 
+/// Benchmarks the echo RPC method.
 fn bench_echo(c: &mut Criterion) {
     c.bench_function("echo", |b| {
         b.iter(|| {
@@ -72,6 +79,7 @@ fn bench_echo(c: &mut Criterion) {
     });
 }
 
+/// Benchmarks the add RPC method.
 fn bench_add(c: &mut Criterion) {
     c.bench_function("add", |b| {
         b.iter(|| {

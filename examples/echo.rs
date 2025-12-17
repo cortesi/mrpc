@@ -1,6 +1,9 @@
+//! Simple echo server and client example.
+
 use mrpc::{Client, Connection, Result, RpcSender, Server};
 use rmpv::Value;
 
+/// Echo service that returns the method and first parameter.
 #[derive(Clone, Default)]
 struct Echo;
 

@@ -1,5 +1,10 @@
-use rmpv::Value;
-use std::io;
+use std::{
+    fmt::{Display, Formatter, Result as FmtResult},
+    io::{self, ErrorKind},
+    result,
+};
+
+use rmpv::{decode, encode, Value};
 use thiserror::Error;
 
 /// Errors that can occur during RPC operations.
@@ -11,11 +16,11 @@ pub enum RpcError {
 
     /// Error occurred during MessagePack serialization.
     #[error("Serialization error: {0}")]
-    Serialization(#[from] rmpv::encode::Error),
+    Serialization(#[from] encode::Error),
 
     /// Error occurred during MessagePack deserialization.
     #[error("Deserialization error: {0}")]
-    Deserialization(#[from] rmpv::decode::Error),
+    Deserialization(#[from] decode::Error),
 
     /// Error related to the RPC protocol.
     #[error("Protocol error: {0}")]
@@ -25,6 +30,7 @@ pub enum RpcError {
     #[error("Service error: {0}")]
     Service(ServiceError),
 
+    /// The connection was closed.
     #[error("Connection disconnected")]
     Disconnect,
 
@@ -41,36 +47,36 @@ pub enum RpcError {
 /// and "value" keys.
 #[derive(Error, Debug)]
 pub struct ServiceError {
+    /// The error type name.
     pub name: String,
+    /// Additional error data.
     pub value: Value,
 }
 
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for ServiceError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "Service error {}: {:?}", self.name, self.value)
     }
 }
 
 impl From<ServiceError> for Value {
     fn from(error: ServiceError) -> Self {
-        Value::Map(vec![
-            (
-                Value::String("name".into()),
-                Value::String(error.name.into()),
-            ),
-            (Value::String("value".into()), error.value),
+        Self::Map(vec![
+            (Self::String("name".into()), Self::String(error.name.into())),
+            (Self::String("value".into()), error.value),
         ])
     }
 }
 
-impl From<std::io::Error> for RpcError {
-    fn from(error: std::io::Error) -> Self {
-        if error.kind() == std::io::ErrorKind::UnexpectedEof {
-            RpcError::Disconnect
+impl From<io::Error> for RpcError {
+    fn from(error: io::Error) -> Self {
+        if error.kind() == ErrorKind::UnexpectedEof {
+            Self::Disconnect
         } else {
-            RpcError::Io(error)
+            Self::Io(error)
         }
     }
 }
 
-pub type Result<T> = std::result::Result<T, RpcError>;
+/// A type alias for `Result` with [`RpcError`] as the error type.
+pub type Result<T> = result::Result<T, RpcError>;

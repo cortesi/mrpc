@@ -1,9 +1,14 @@
+//! Ping-pong integration tests for mrpc bidirectional communication.
+
+#![allow(clippy::tests_outside_test_module)]
+
+use std::{error::Error, sync::Arc, time::Duration};
+
 use async_trait::async_trait;
 use mrpc::{self, Client, Connection, RpcError, RpcSender, Server};
 use rmpv::Value;
-use std::sync::Arc;
 use tempfile::tempdir;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::sleep};
 use tracing_test::traced_test;
 
 #[derive(Clone, Default)]
@@ -82,7 +87,7 @@ impl Connection for PongService {
 
 #[traced_test]
 #[tokio::test]
-async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_pingpong() -> Result<(), Box<dyn Error>> {
     let temp_dir = tempdir()?;
     let socket_path = temp_dir.path().join("pong.sock");
 
@@ -98,7 +103,7 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Give the server a moment to start up
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    sleep(Duration::from_millis(1000)).await;
 
     // Set up the Ping client
     let pong_count = Arc::new(Mutex::new(0));
@@ -115,7 +120,7 @@ async fn test_pingpong() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Give some time for all pongs to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    sleep(Duration::from_millis(100)).await;
 
     let final_pong_count = *pong_count.lock().await;
     let final_connected_count = *ping_service.connected_count.lock().await;

@@ -3,18 +3,16 @@
 //! Defines structures and traits for managing RPC connections,
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
 use rmpv::Value;
-use tokio::runtime::Handle;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
+    io::{split, AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
+    runtime::Handle,
     sync::{mpsc, oneshot, Mutex},
 };
 use tokio_util::io::SyncIoBridge;
-
 use tracing::{error, trace, warn};
 
 use crate::{
@@ -24,14 +22,21 @@ use crate::{
 
 /// Internal message type for communication between the client API and the connection handler.
 #[derive(Debug)]
-pub(crate) enum ClientMessage {
+pub enum ClientMessage {
+    /// An RPC request with a response channel.
     Request {
+        /// Method name.
         method: String,
+        /// Method parameters.
         params: Vec<Value>,
+        /// Channel for sending the response back.
         response_sender: oneshot::Sender<Result<Value>>,
     },
+    /// An RPC notification (no response expected).
     Notification {
+        /// Method name.
         method: String,
+        /// Method parameters.
         params: Vec<Value>,
     },
 }
@@ -39,6 +44,7 @@ pub(crate) enum ClientMessage {
 /// The interface for sending RPC requests and notifications.
 #[derive(Debug, Clone)]
 pub struct RpcSender {
+    /// Channel sender for client messages.
     pub(crate) sender: mpsc::Sender<ClientMessage>,
 }
 
@@ -71,12 +77,16 @@ impl RpcSender {
     }
 }
 
-pub(crate) struct ConnectionHandler<S, T: Connection>
+/// Handles an RPC connection, processing incoming and outgoing messages.
+pub struct ConnectionHandler<S, T: Connection>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    /// The underlying RPC connection.
     connection: Arc<Mutex<RpcConnection<S>>>,
+    /// The service implementation.
     service: Arc<T>,
+    /// Sender for outgoing RPC messages.
     rpc_sender: RpcSender,
 }
 
@@ -84,6 +94,7 @@ impl<S, T: Connection> ConnectionHandler<S, T>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    /// Creates a new connection handler.
     pub fn new(
         connection: RpcConnection<S>,
         service: T,
@@ -98,15 +109,17 @@ where
         }
     }
 
+    /// Runs the connection handler, processing messages until the connection closes.
     pub async fn run(&mut self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
-        let (connected_tx, mut connected_rx) = tokio::sync::oneshot::channel();
+        let (connected_tx, mut connected_rx) = oneshot::channel();
         let rpc_sender_clone = self.rpc_sender.clone();
 
         // Spawn the connected method in a separate task
         let service = Arc::clone(&self.service);
         tokio::spawn(async move {
             let result = service.connected(rpc_sender_clone).await;
-            let _ = connected_tx.send(result);
+            // Receiver may be dropped if connection handler exits early; ignore send errors.
+            drop(connected_tx.send(result));
         });
 
         let mut connected_done = false;
@@ -185,6 +198,7 @@ where
     }
 }
 
+/// Handles a single incoming message (request, response, or notification).
 async fn handle_incoming_message<S, T>(
     connection: Arc<Mutex<RpcConnection<S>>>,
     service: Arc<T>,
@@ -243,6 +257,7 @@ where
     Ok(())
 }
 
+/// Processes outgoing client messages from the channel.
 async fn handle_client_messages<S>(
     connection: Arc<Mutex<RpcConnection<S>>>,
     mut client_receiver: mpsc::Receiver<ClientMessage>,
@@ -257,6 +272,7 @@ async fn handle_client_messages<S>(
     }
 }
 
+/// Handles a single outgoing client message.
 async fn handle_client_message<S>(
     connection: &mut RpcConnection<S>,
     message: ClientMessage,
@@ -291,16 +307,19 @@ pub trait ConnectionMaker<T>: Send + Sync
 where
     T: Connection,
 {
+    /// Creates a new connection instance.
     fn make_connection(&self) -> T;
 }
 
-// ClosureConnectionMaker implementation (assuming it's already defined)
+/// A [`ConnectionMaker`] implementation using a closure.
 pub struct ConnectionMakerFn<F, T>
 where
     F: FnMut() -> T + Send + Sync,
     T: Connection,
 {
+    /// The closure that creates connections.
     make_fn: F,
+    /// Phantom data for the connection type.
     _phantom: PhantomData<T>,
 }
 
@@ -309,8 +328,9 @@ where
     F: Fn() -> T + Send + Sync,
     T: Connection,
 {
+    /// Creates a new `ConnectionMakerFn` from a closure.
     pub fn new(make_fn: F) -> Self {
-        ConnectionMakerFn {
+        Self {
             make_fn,
             _phantom: PhantomData,
         }
@@ -383,14 +403,18 @@ impl Connection for () {}
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
 #[derive(Debug)]
-pub(crate) struct RpcConnection<S>
+pub struct RpcConnection<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    /// Receiver for incoming messages.
     message_receiver: Option<mpsc::Receiver<Result<Message>>>,
+    /// Write half of the stream.
     write_half: WriteHalf<S>,
+    /// Next request ID to use.
     next_request_id: u32,
-    pending_requests: std::collections::HashMap<u32, oneshot::Sender<Result<Value>>>,
+    /// Pending requests awaiting responses.
+    pending_requests: HashMap<u32, oneshot::Sender<Result<Value>>>,
 }
 
 impl<S> RpcConnection<S>
@@ -399,7 +423,7 @@ where
 {
     /// Creates a new RpcConnection with the given stream.
     pub fn new(stream: S) -> Self {
-        let (read_half, write_half) = tokio::io::split(stream);
+        let (read_half, write_half) = split(stream);
         let (message_sender, message_receiver) = mpsc::channel(1000);
 
         // Spawn a blocking task to read messages
@@ -415,7 +439,8 @@ where
                         }
                     },
                     Err(e) => {
-                        let _ = message_sender.blocking_send(Err(e));
+                        // Receiver dropped means handler exited; ignore send errors.
+                        drop(message_sender.blocking_send(Err(e)));
                         break;
                     }
                 }
@@ -425,20 +450,23 @@ where
         Self {
             write_half,
             next_request_id: 1,
-            pending_requests: std::collections::HashMap::new(),
+            pending_requests: HashMap::new(),
             message_receiver: Some(message_receiver),
         }
     }
 
+    /// Takes ownership of the message receiver channel.
     pub fn receiver(&mut self) -> mpsc::Receiver<Result<Message>> {
         self.message_receiver
             .take()
             .expect("Receiver already taken")
     }
 
+    /// Handles an incoming response message, routing it to the appropriate pending request.
     pub fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
-            let _ = sender.send(response.result.map_err(|e| {
+            // Receiver may be dropped if caller gave up waiting; ignore send errors.
+            drop(sender.send(response.result.map_err(|e| {
                 if let Value::Map(map) = e {
                     if let (Some(Value::String(name)), Some(value)) = (
                         map.iter()
@@ -464,7 +492,7 @@ where
                         value: e,
                     })
                 }
-            }));
+            })));
             Ok(())
         } else {
             Err(RpcError::Protocol(format!(
@@ -484,6 +512,7 @@ where
         Ok(())
     }
 
+    /// Sends an RPC request and registers the response channel.
     pub async fn send_request(
         &mut self,
         method: String,
@@ -497,6 +526,7 @@ where
         self.write_message(&Message::Request(request)).await
     }
 
+    /// Sends an RPC notification (no response expected).
     pub async fn send_notification(&mut self, method: String, params: Vec<Value>) -> Result<()> {
         let notification = Notification { method, params };
         self.write_message(&Message::Notification(notification))

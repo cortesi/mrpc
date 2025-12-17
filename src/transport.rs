@@ -3,7 +3,7 @@
 //! Provides implementations for TCP and Unix domain socket transports,
 //! as well as abstractions for RPC servers and clients.
 
-use std::{marker::PhantomData, path::Path, sync::Arc};
+use std::{marker::PhantomData, net::SocketAddr, path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::{
@@ -12,27 +12,30 @@ use tokio::{
         TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
     },
     sync::mpsc,
+    task::JoinHandle,
 };
 use tracing::trace;
 
-use crate::error::*;
 use crate::{
-    Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
-    Value,
+    error::*, Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection,
+    RpcSender, Value,
 };
 
 /// TCP listener for accepting RPC connections.
 struct TcpListener {
+    /// The underlying tokio TCP listener.
     inner: TokioTcpListener,
 }
 
 impl TcpListener {
+    /// Binds a TCP listener to the given address.
     pub async fn bind(addr: &str) -> Result<Self> {
         trace!("Binding TCP listener to address: {}", addr);
         let listener = TokioTcpListener::bind(addr).await?;
         Ok(Self { inner: listener })
     }
 
+    /// Accepts an incoming TCP connection.
     async fn accept(&self) -> Result<RpcConnection<TcpStream>> {
         let (stream, addr) = self.inner.accept().await?;
         trace!("Accepted TCP connection from: {}", addr);
@@ -42,10 +45,12 @@ impl TcpListener {
 
 /// Unix domain socket listener for accepting RPC connections.
 struct UnixListener {
+    /// The underlying tokio Unix listener.
     inner: TokioUnixListener,
 }
 
 impl UnixListener {
+    /// Binds a Unix listener to the given path.
     pub async fn bind<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy();
         trace!("Binding Unix listener to path: {}", path_str);
@@ -53,6 +58,7 @@ impl UnixListener {
         Ok(Self { inner: listener })
     }
 
+    /// Accepts an incoming Unix connection.
     async fn accept(&self) -> Result<RpcConnection<UnixStream>> {
         let (stream, _) = self.inner.accept().await?;
         trace!("Accepted Unix connection");
@@ -63,7 +69,9 @@ impl UnixListener {
 /// Trait for types that can accept incoming RPC connections.
 #[async_trait]
 trait Accept {
+    /// The stream type produced by accepting a connection.
     type Stream: AsyncRead + AsyncWrite + Unpin;
+    /// Accepts an incoming connection.
     async fn accept(&self) -> Result<RpcConnection<Self::Stream>>;
 }
 
@@ -85,7 +93,9 @@ impl Accept for UnixListener {
 
 /// Either a TCP or Unix domain socket listener.
 enum Listener {
+    /// TCP listener.
     Tcp(TcpListener),
+    /// Unix domain socket listener.
     Unix(UnixListener),
 }
 
@@ -95,8 +105,11 @@ pub struct Server<T>
 where
     T: Connection,
 {
+    /// Factory for creating connection handlers.
     connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
+    /// The configured listener (TCP or Unix).
     listener: Option<Listener>,
+    /// Phantom data for the connection type.
     _phantom: PhantomData<T>,
 }
 
@@ -126,7 +139,7 @@ where
 
     /// Returns the bound address of the server. Only valid for TCP listeners that have already
     /// been bound, otherwise returns an error.
-    pub fn local_addr(&self) -> Result<std::net::SocketAddr> {
+    pub fn local_addr(&self) -> Result<SocketAddr> {
         match &self.listener {
             Some(Listener::Tcp(tcp_listener)) => Ok(tcp_listener.inner.local_addr()?),
             Some(Listener::Unix(_)) => Err(RpcError::Protocol(
@@ -160,6 +173,7 @@ where
         }
     }
 
+    /// Internal run loop for accepting connections.
     async fn run_internal<L>(&self, listener: &L) -> Result<()>
     where
         L: Accept,
@@ -192,8 +206,10 @@ where
 pub struct Client<T: Connection> {
     /// Sender for sending RPC requests and notifications.
     pub sender: RpcSender,
-    handle: tokio::task::JoinHandle<()>,
-    _phantom: std::marker::PhantomData<T>,
+    /// Handle to the background connection handler task.
+    handle: JoinHandle<()>,
+    /// Phantom data for the connection type.
+    _phantom: PhantomData<T>,
 }
 
 impl<T: Connection> Client<T> {
@@ -216,6 +232,7 @@ impl<T: Connection> Client<T> {
         Self::new(RpcConnection::new(stream), service).await
     }
 
+    /// Creates a new client from an existing RPC connection.
     async fn new<S>(connection: RpcConnection<S>, service: T) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -241,7 +258,7 @@ impl<T: Connection> Client<T> {
         Ok(Self {
             sender: rpc_sender,
             handle: handler_task,
-            _phantom: std::marker::PhantomData,
+            _phantom: PhantomData,
         })
     }
 

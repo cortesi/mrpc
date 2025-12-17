@@ -2,42 +2,63 @@
 //!
 //! Includes structures for requests, responses, and notifications, as well as
 //! utilities for encoding and decoding these messages.
-use rmpv::Value;
-use std::io::{Read, Write};
+use std::{
+    io::{Read, Write},
+    result,
+};
+
+use rmpv::{
+    decode::{self, read_value},
+    encode::write_value,
+    Value,
+};
 
 use crate::error::*;
 
+/// Message type identifier for requests.
 const REQUEST_MESSAGE: u64 = 0;
+/// Message type identifier for responses.
 const RESPONSE_MESSAGE: u64 = 1;
+/// Message type identifier for notifications.
 const NOTIFICATION_MESSAGE: u64 = 2;
 
 /// Represents the different types of RPC messages: requests, responses, and notifications.
 #[derive(PartialEq, Clone, Debug)]
 pub enum Message {
+    /// An RPC request.
     Request(Request),
+    /// An RPC response.
     Response(Response),
+    /// An RPC notification.
     Notification(Notification),
 }
 
 /// An RPC request message containing an ID, method name, and parameters.
 #[derive(PartialEq, Clone, Debug)]
 pub struct Request {
+    /// Unique identifier for matching responses.
     pub id: u32,
+    /// The method name to invoke.
     pub method: String,
+    /// Arguments to pass to the method.
     pub params: Vec<Value>,
 }
 
 /// An RPC response message containing an ID and either a result or an error.
 #[derive(PartialEq, Clone, Debug)]
 pub struct Response {
+    /// Matches the request ID this is responding to.
     pub id: u32,
-    pub result: std::result::Result<Value, Value>,
+    /// The result value or error value.
+    pub result: result::Result<Value, Value>,
 }
 
 /// An RPC notification message containing a method name and parameters.
 #[derive(PartialEq, Clone, Debug)]
 pub struct Notification {
+    /// The method name to invoke.
     pub method: String,
+    /// Arguments to pass to the method.
     pub params: Vec<Value>,
 }
 
@@ -45,13 +66,13 @@ impl Message {
     /// Converts the message to a MessagePack-RPC compatible Value.
     pub fn to_value(&self) -> Value {
         match self {
-            Message::Request(req) => Value::Array(vec![
+            Self::Request(req) => Value::Array(vec![
                 Value::Integer(REQUEST_MESSAGE.into()),
                 Value::Integer(req.id.into()),
                 Value::String(req.method.clone().into()),
                 Value::Array(req.params.clone()),
             ]),
-            Message::Response(resp) => Value::Array(vec![
+            Self::Response(resp) => Value::Array(vec![
                 Value::Integer(RESPONSE_MESSAGE.into()),
                 Value::Integer(resp.id.into()),
                 match &resp.result {
@@ -63,7 +84,7 @@ impl Message {
                     Err(_) => Value::Nil,
                 },
             ]),
-            Message::Notification(notif) => Value::Array(vec![
+            Self::Notification(notif) => Value::Array(vec![
                 Value::Integer(NOTIFICATION_MESSAGE.into()),
                 Value::String(notif.method.clone().into()),
                 Value::Array(notif.params.clone()),
@@ -100,7 +121,7 @@ impl Message {
                                     return Err(RpcError::Protocol("Invalid request params".into()))
                                 }
                             };
-                            Ok(Message::Request(Request { id, method, params }))
+                            Ok(Self::Request(Request { id, method, params }))
                         }
                         Some(RESPONSE_MESSAGE) => {
                             if array.len() != 4 {
@@ -117,7 +138,7 @@ impl Message {
                             } else {
                                 Err(array[2].clone())
                             };
-                            Ok(Message::Response(Response { id, result }))
+                            Ok(Self::Response(Response { id, result }))
                         }
                         Some(NOTIFICATION_MESSAGE) => {
                             if array.len() != 3 {
@@ -137,7 +158,7 @@ impl Message {
                                     ))
                                 }
                             };
-                            Ok(Message::Notification(Notification { method, params }))
+                            Ok(Self::Notification(Notification { method, params }))
                         }
                         _ => Err(RpcError::Protocol("Invalid message type".into())),
                     },
@@ -151,17 +172,18 @@ impl Message {
     /// Encodes the message to MessagePack format and writes it to the given writer.
     pub fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {
         let value = self.to_value();
-        rmpv::encode::write_value(writer, &value)?;
+        write_value(writer, &value)?;
         Ok(())
     }
 
     /// Reads and decodes a message from MessagePack format using the given reader.
     pub fn decode<R: Read>(reader: &mut R) -> Result<Self> {
-        match rmpv::decode::read_value(reader) {
+        match read_value(reader) {
             Ok(value) => Self::from_value(value),
-            Err(rmpv::decode::Error::InvalidMarkerRead(e))
-            | Err(rmpv::decode::Error::InvalidDataRead(e)) => Err(RpcError::from(e)),
-            Err(rmpv::decode::Error::DepthLimitExceeded) => {
+            Err(decode::Error::InvalidMarkerRead(e) | decode::Error::InvalidDataRead(e)) => {
+                Err(RpcError::from(e))
+            }
+            Err(decode::Error::DepthLimitExceeded) => {
                 Err(RpcError::Protocol("Depth limit exceeded".into()))
             }
         }
@@ -170,8 +192,9 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Cursor;
+
+    use super::*;
 
     // Test cases at the top level of the test module
     lazy_static::lazy_static! {

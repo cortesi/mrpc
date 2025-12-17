@@ -18,6 +18,7 @@
 //! 3. Use `client.send_request()` or `client.send_notification()`
 
 mod connection;
+/// Error types for RPC operations.
 mod error;
 mod message;
 mod transport;
@@ -25,6 +26,5 @@ mod transport;
 pub use connection::*;
 pub use error::*;
 pub use message::*;
-pub use transport::*;
-
 pub use rmpv::Value;
+pub use transport::*;

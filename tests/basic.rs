@@ -1,11 +1,16 @@
-use async_trait::async_trait;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::task;
-use tokio::time::timeout;
+//! Basic integration tests for mrpc.
 
+#![allow(clippy::tests_outside_test_module)]
+
+use std::{sync::Arc, time::Duration};
+
+use async_trait::async_trait;
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server, ServiceError, Value};
+use tokio::{
+    sync::Mutex,
+    task,
+    time::{sleep, timeout},
+};
 
 #[derive(Clone)]
 struct TestServer;
@@ -45,7 +50,7 @@ struct TestClient;
 
 impl Default for TestClient {
     fn default() -> Self {
-        TestClient
+        Self
     }
 }
 
@@ -59,7 +64,7 @@ struct TestClientConnect {
 
 impl TestClientConnect {
     fn new() -> Self {
-        TestClientConnect {
+        Self {
             connected_success: Arc::new(Mutex::new(false)),
         }
     }
@@ -159,7 +164,7 @@ async fn test_method_not_found() -> Result<()> {
 #[tokio::test]
 async fn test_concurrent_requests() -> Result<()> {
     let (client, _) = setup_server_and_client::<TestClient>().await?;
-    let client = std::sync::Arc::new(client);
+    let client = Arc::new(client);
 
     let num_requests = 100;
     let mut handles = vec![];
@@ -167,7 +172,7 @@ async fn test_concurrent_requests() -> Result<()> {
     for i in 0..num_requests {
         let client_clone = client.clone();
         let handle = task::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(i % 10)).await;
+            sleep(Duration::from_millis(i % 10)).await;
             let result = client_clone
                 .send_request("add", &[Value::from(i), Value::from(i)])
                 .await?;
@@ -197,7 +202,7 @@ async fn test_client_request_from_connected() -> Result<()> {
             if *connected_success.lock().await {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            sleep(Duration::from_millis(100)).await;
         }
 
         Err(RpcError::Protocol(
