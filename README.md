@@ -18,10 +18,12 @@ A MessagePack-RPC implementation in Rust.
 
 ## Quick Start
 
+<!-- snips: examples/echo.rs#content -->
 ```rust
 use mrpc::{Client, Connection, Result, RpcSender, Server};
 use rmpv::Value;
 
+/// Echo service that returns the method and first parameter.
 #[derive(Clone, Default)]
 struct Echo;
 
@@ -39,7 +41,7 @@ impl Connection for Echo {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // We're just using the default constructor as our ConnectionMaker
+    // Using the default constructor as our ConnectionMaker
     let server = Server::from_fn(Echo::default).tcp("127.0.0.1:0").await?;
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.run());
@@ -54,3 +56,4 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+

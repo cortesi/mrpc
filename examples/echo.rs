@@ -1,5 +1,6 @@
 //! Simple echo server and client example.
 
+// snips-start: content
 use mrpc::{Client, Connection, Result, RpcSender, Server};
 use rmpv::Value;
 
@@ -35,3 +36,4 @@ async fn main() -> Result<()> {
     println!("{}", result);
     Ok(())
 }
+// snips-end: content
