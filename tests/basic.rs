@@ -2,17 +2,36 @@
 
 #![allow(clippy::tests_outside_test_module)]
 
-use std::{sync::Arc, time::Duration};
+use std::{future::pending, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use mrpc::{
-    Client, Connection, Result, RpcError, RpcSender, Server, ServerHandle, ServiceError, Value,
+    Client, Connection, Listener, Result, RpcError, RpcSender, Server, ServerHandle, ServiceError,
+    Value, duplex,
 };
 use tokio::{
+    io::DuplexStream,
     sync::{Mutex, oneshot},
     task,
     time::{sleep, timeout},
 };
+
+struct OnceListener {
+    stream: Mutex<Option<DuplexStream>>,
+}
+
+#[async_trait]
+impl Listener for OnceListener {
+    type Stream = DuplexStream;
+
+    async fn accept(&self) -> Result<Self::Stream> {
+        let stream = { self.stream.lock().await.take() };
+        match stream {
+            Some(stream) => Ok(stream),
+            None => pending::<Result<Self::Stream>>().await,
+        }
+    }
+}
 
 #[derive(Clone)]
 struct TestServer;
@@ -201,6 +220,26 @@ async fn test_concurrent_requests() -> Result<()> {
     server_handle.shutdown();
     server_handle.join().await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_duplex_transport() -> Result<()> {
+    let (client_stream, server_stream) = duplex(1024);
+    let server = Server::from_fn(|| TestServer).with_listener(OnceListener {
+        stream: Mutex::new(Some(server_stream)),
+    })?;
+    let server_handle = server.spawn().await?;
+
+    let client = Client::from_stream(client_stream, ()).await?;
+    let result = client
+        .send_request("add", &[Value::from(2), Value::from(4)])
+        .await?;
+    assert_eq!(result, Value::from(6));
+
+    drop(client);
+    server_handle.shutdown();
+    server_handle.join().await?;
     Ok(())
 }
 

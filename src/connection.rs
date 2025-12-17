@@ -3,22 +3,24 @@
 //! Defines structures and traits for managing RPC connections,
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
-#[cfg(feature = "serde")]
-use std::io::Cursor;
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::{Cursor, ErrorKind},
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
-use rmpv::Value;
+use bytes::{Buf, BytesMut};
+use rmpv::{Value, decode};
 #[cfg(feature = "serde")]
 use rmpv::{decode::read_value, encode::write_value};
 #[cfg(feature = "serde")]
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf, split},
-    runtime::Handle,
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, WriteHalf, split},
     sync::{Mutex, mpsc, oneshot},
 };
-use tokio_util::io::SyncIoBridge;
 use tracing::{error, trace, warn};
 
 use crate::{
@@ -481,21 +483,42 @@ where
         let (read_half, write_half) = split(stream);
         let (message_sender, message_receiver) = mpsc::channel(1000);
 
-        // Spawn a blocking task to read messages
-        Handle::current().spawn_blocking(move || {
-            let mut sync_reader = SyncIoBridge::new(read_half);
+        tokio::spawn(async move {
+            let mut read_half = read_half;
+            let mut buffer = BytesMut::with_capacity(8192);
+            let mut eof = false;
+
             loop {
-                match Message::decode(&mut sync_reader) {
-                    Ok(message) => match message_sender.blocking_send(Ok(message)) {
+                match try_decode_message(&buffer) {
+                    Ok(Some((message, consumed))) => {
+                        buffer.advance(consumed);
+                        if message_sender.send(Ok(message)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) if eof => {
+                        // Receiver dropped means handler exited; ignore send errors.
+                        drop(
+                            message_sender
+                                .send(Err(RpcError::Disconnect { source: None }))
+                                .await,
+                        );
+                        break;
+                    }
+                    Ok(None) => match read_half.read_buf(&mut buffer).await {
+                        Ok(0) => {
+                            eof = true;
+                        }
                         Ok(_) => {}
                         Err(e) => {
-                            error!("Error sending message: {}", e);
+                            // Receiver dropped means handler exited; ignore send errors.
+                            drop(message_sender.send(Err(RpcError::from(e))).await);
                             break;
                         }
                     },
                     Err(e) => {
                         // Receiver dropped means handler exited; ignore send errors.
-                        drop(message_sender.blocking_send(Err(e)));
+                        drop(message_sender.send(Err(e)).await);
                         break;
                     }
                 }
@@ -585,5 +608,29 @@ where
         let notification = Notification { method, params };
         self.write_message(&Message::Notification(notification))
             .await
+    }
+}
+
+/// Attempts to decode a single message from the beginning of `buffer`.
+///
+/// Returns `Ok(None)` when `buffer` doesn't contain a full MessagePack value yet.
+fn try_decode_message(buffer: &[u8]) -> Result<Option<(Message, usize)>> {
+    let mut cursor = Cursor::new(buffer);
+
+    match decode::read_value(&mut cursor) {
+        Ok(value) => {
+            let consumed = cursor.position() as usize;
+            let message = Message::from_value(value)?;
+            Ok(Some((message, consumed)))
+        }
+        Err(decode::Error::InvalidMarkerRead(e) | decode::Error::InvalidDataRead(e))
+            if e.kind() == ErrorKind::UnexpectedEof =>
+        {
+            Ok(None)
+        }
+        Err(decode::Error::DepthLimitExceeded) => {
+            Err(RpcError::Protocol("Depth limit exceeded".into()))
+        }
+        Err(e) => Err(RpcError::Deserialization(e)),
     }
 }

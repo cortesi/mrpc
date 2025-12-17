@@ -16,7 +16,8 @@ use async_trait::async_trait;
 #[cfg(feature = "serde")]
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io,
+    io::{AsyncRead, AsyncWrite, DuplexStream},
     net::{
         TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
     },
@@ -29,6 +30,47 @@ use crate::{
     Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
     Value, error::*,
 };
+
+/// Create a pair of connected in-memory streams.
+pub fn duplex(buffer_size: usize) -> (DuplexStream, DuplexStream) {
+    io::duplex(buffer_size)
+}
+
+/// A listener that yields bidirectional streams.
+#[async_trait]
+pub trait Listener: Send + Sync + 'static {
+    /// The stream type produced by accepting a connection.
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+
+    /// Accept the next connection.
+    async fn accept(&self) -> Result<Self::Stream>;
+}
+
+/// A bidirectional stream usable by the server accept loop.
+trait AsyncStream: AsyncRead + AsyncWrite {}
+
+impl<T> AsyncStream for T where T: AsyncRead + AsyncWrite {}
+
+/// A boxed bidirectional stream used to erase concrete stream types.
+type BoxedStream = Box<dyn AsyncStream + Unpin + Send>;
+
+/// Adapter that type-erases a [`Listener`] by boxing accepted streams.
+struct ErasedListener<L> {
+    /// The wrapped listener.
+    inner: L,
+}
+
+#[async_trait]
+impl<L> Listener for ErasedListener<L>
+where
+    L: Listener,
+{
+    type Stream = BoxedStream;
+
+    async fn accept(&self) -> Result<Self::Stream> {
+        Ok(Box::new(self.inner.accept().await?))
+    }
+}
 
 /// TCP listener for accepting RPC connections.
 struct TcpListener {
@@ -43,12 +85,16 @@ impl TcpListener {
         let listener = TokioTcpListener::bind(addr).await?;
         Ok(Self { inner: listener })
     }
+}
 
-    /// Accepts an incoming TCP connection.
-    async fn accept(&self) -> Result<RpcConnection<TcpStream>> {
+#[async_trait]
+impl Listener for TcpListener {
+    type Stream = TcpStream;
+
+    async fn accept(&self) -> Result<Self::Stream> {
         let (stream, addr) = self.inner.accept().await?;
         trace!("Accepted TCP connection from: {}", addr);
-        Ok(RpcConnection::new(stream))
+        Ok(stream)
     }
 }
 
@@ -71,12 +117,16 @@ impl UnixListener {
             path: path.as_ref().to_path_buf(),
         })
     }
+}
 
-    /// Accepts an incoming Unix connection.
-    async fn accept(&self) -> Result<RpcConnection<UnixStream>> {
+#[async_trait]
+impl Listener for UnixListener {
+    type Stream = UnixStream;
+
+    async fn accept(&self) -> Result<Self::Stream> {
         let (stream, _) = self.inner.accept().await?;
         trace!("Accepted Unix connection");
-        Ok(RpcConnection::new(stream))
+        Ok(stream)
     }
 }
 
@@ -92,39 +142,6 @@ impl Drop for UnixListener {
     }
 }
 
-/// Trait for types that can accept incoming RPC connections.
-#[async_trait]
-trait Accept {
-    /// The stream type produced by accepting a connection.
-    type Stream: AsyncRead + AsyncWrite + Unpin;
-    /// Accepts an incoming connection.
-    async fn accept(&self) -> Result<RpcConnection<Self::Stream>>;
-}
-
-#[async_trait]
-impl Accept for TcpListener {
-    type Stream = TcpStream;
-    async fn accept(&self) -> Result<RpcConnection<Self::Stream>> {
-        self.accept().await
-    }
-}
-
-#[async_trait]
-impl Accept for UnixListener {
-    type Stream = UnixStream;
-    async fn accept(&self) -> Result<RpcConnection<Self::Stream>> {
-        self.accept().await
-    }
-}
-
-/// Either a TCP or Unix domain socket listener.
-enum Listener {
-    /// TCP listener.
-    Tcp(TcpListener),
-    /// Unix domain socket listener.
-    Unix(UnixListener),
-}
-
 /// RPC server that can listen on TCP or Unix domain sockets. The service type must implement the
 /// `RpcService` trait and `Default`. A new service instance is created for each connection.
 pub struct Server<T>
@@ -133,8 +150,10 @@ where
 {
     /// Factory for creating connection handlers.
     connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
-    /// The configured listener (TCP or Unix).
-    listener: Option<Listener>,
+    /// The configured listener.
+    listener: Option<Box<dyn Listener<Stream = BoxedStream>>>,
+    /// The bound TCP address, when applicable.
+    local_addr: Option<SocketAddr>,
     /// Phantom data for the connection type.
     _phantom: PhantomData<T>,
 }
@@ -151,6 +170,7 @@ where
         Self {
             connection_maker: Arc::new(maker),
             listener: None,
+            local_addr: None,
             _phantom: PhantomData,
         }
     }
@@ -166,50 +186,58 @@ where
     /// Returns the bound address of the server. Only valid for TCP listeners that have already
     /// been bound, otherwise returns an error.
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        match &self.listener {
-            Some(Listener::Tcp(tcp_listener)) => Ok(tcp_listener.inner.local_addr()?),
-            Some(Listener::Unix(_)) => Err(RpcError::Protocol(
-                "unix sockets don't have a SocketAddr".into(),
-            )),
-            None => Err(RpcError::Protocol("No listener configured".into())),
+        if self.listener.is_none() {
+            return Err(RpcError::Protocol("No listener configured".into()));
         }
+        self.local_addr
+            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
     }
 
     /// Configures the server to listen on a TCP address.
     pub async fn tcp(mut self, addr: &str) -> Result<Self> {
-        self.listener = Some(Listener::Tcp(TcpListener::bind(addr).await?));
+        let tcp_listener = TcpListener::bind(addr).await?;
+        self.local_addr = Some(tcp_listener.inner.local_addr()?);
+        self.listener = Some(Box::new(ErasedListener {
+            inner: tcp_listener,
+        }));
         Ok(self)
     }
 
     /// Configures the server to listen on a Unix domain socket.
     pub async fn unix<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
-        self.listener = Some(Listener::Unix(UnixListener::bind(path).await?));
+        self.local_addr = None;
+        self.listener = Some(Box::new(ErasedListener {
+            inner: UnixListener::bind(path).await?,
+        }));
+        Ok(self)
+    }
+
+    /// Configures the server to accept connections from a custom listener.
+    pub fn with_listener<L>(mut self, listener: L) -> Result<Self>
+    where
+        L: Listener,
+    {
+        self.local_addr = None;
+        self.listener = Some(Box::new(ErasedListener { inner: listener }));
         Ok(self)
     }
 
     /// Starts the server and returns a handle for lifecycle control.
     pub async fn spawn(self) -> Result<ServerHandle> {
-        let listener = self
-            .listener
-            .ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
+        let Self {
+            connection_maker,
+            listener,
+            local_addr,
+            _phantom,
+        } = self;
 
-        let local_addr = match &listener {
-            Listener::Tcp(tcp_listener) => Some(tcp_listener.inner.local_addr()?),
-            Listener::Unix(_) => None,
-        };
-
-        let connection_maker = Arc::clone(&self.connection_maker);
+        let listener =
+            listener.ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn(async move {
-            match listener {
-                Listener::Tcp(tcp_listener) => {
-                    run_listener(tcp_listener, connection_maker, shutdown_rx).await
-                }
-                Listener::Unix(unix_listener) => {
-                    run_listener(unix_listener, connection_maker, shutdown_rx).await
-                }
-            }
-        });
+        let task =
+            tokio::spawn(
+                async move { run_listener(listener, connection_maker, shutdown_rx).await },
+            );
 
         Ok(ServerHandle {
             shutdown_tx,
@@ -221,6 +249,19 @@ where
     /// Starts the server and begins accepting connections.
     pub async fn run(self) -> Result<()> {
         self.spawn().await?.join().await
+    }
+}
+
+impl<T> Server<T>
+where
+    T: Connection + Default,
+{
+    /// Creates a new server from a listener using `T::default` for each connection.
+    pub fn from_listener<L>(listener: L) -> Result<Self>
+    where
+        L: Listener,
+    {
+        Self::from_fn(T::default).with_listener(listener)
     }
 }
 
@@ -253,20 +294,18 @@ impl ServerHandle {
     /// This is only valid for TCP listeners; Unix listeners do not have a `SocketAddr`.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.local_addr
-            .ok_or_else(|| RpcError::Protocol("unix sockets don't have a SocketAddr".into()))
+            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
     }
 }
 
 /// Runs an accept loop until shutdown is signalled, cancelling active connection tasks on exit.
-async fn run_listener<T, L>(
-    listener: L,
+async fn run_listener<T>(
+    listener: Box<dyn Listener<Stream = BoxedStream>>,
     connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()>
 where
     T: Connection,
-    L: Accept,
-    L::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut connections = JoinSet::new();
 
@@ -278,7 +317,8 @@ where
                 }
             }
             accepted = listener.accept() => {
-                let rpc_conn = accepted?;
+                let stream = accepted?;
+                let rpc_conn = RpcConnection::new(stream);
                 let connection = connection_maker.make_connection();
                 connections.spawn(async move {
                     serve_connection(rpc_conn, connection).await;
@@ -335,6 +375,14 @@ pub struct Client<T: Connection> {
 }
 
 impl<T: Connection> Client<T> {
+    /// Creates a new client from any bidirectional stream.
+    pub async fn from_stream<S>(stream: S, service: T) -> Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::new(RpcConnection::new(stream), service).await
+    }
+
     /// Creates a new client connected to a Unix domain socket.
     pub async fn connect_unix<P: AsRef<Path>>(path: P, service: T) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy().to_string();
