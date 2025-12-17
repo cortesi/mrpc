@@ -4,7 +4,9 @@ use std::{
     result,
 };
 
-use rmpv::{Value, decode, encode};
+#[cfg(feature = "serde")]
+use rmp_serde::{decode::Error as RmpSerdeDecodeError, encode::Error as RmpSerdeEncodeError};
+use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError};
 use thiserror::Error;
 
 /// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
@@ -55,11 +57,21 @@ pub enum RpcError {
 
     /// Error occurred during MessagePack serialization.
     #[error("Serialization error: {0}")]
-    Serialization(#[from] encode::Error),
+    Serialization(#[from] RmpvEncodeError),
 
     /// Error occurred during MessagePack deserialization.
     #[error("Deserialization error: {0}")]
-    Deserialization(#[from] decode::Error),
+    Deserialization(#[from] RmpvDecodeError),
+
+    /// Failed to serialize request parameters.
+    #[cfg(feature = "serde")]
+    #[error("Request serialization error: {0}")]
+    RequestSerialization(#[from] RmpSerdeEncodeError),
+
+    /// Failed to deserialize a response body.
+    #[cfg(feature = "serde")]
+    #[error("Response deserialization error: {0}")]
+    ResponseDeserialization(#[from] RmpSerdeDecodeError),
 
     /// Error related to the MessagePack-RPC protocol.
     #[error(transparent)]

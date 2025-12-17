@@ -1,5 +1,6 @@
 v0.0.7
 - Structured errors for connect/disconnect and protocol failures
+- Optional `serde` feature for typed request/response helpers
 
 v0.0.6
 - Quieter tracing

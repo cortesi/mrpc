@@ -139,6 +139,17 @@ async fn test_basic_request_response() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "serde")]
+#[tokio::test]
+async fn test_typed_call() -> Result<()> {
+    let (client, _) = setup_server_and_client::<TestClient>().await?;
+
+    let result: i64 = client.call("add", &(5_i64, 3_i64)).await?;
+    assert_eq!(result, 8);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_method_not_found() -> Result<()> {
     let (client, _) = setup_server_and_client::<TestClient>().await?;

@@ -6,6 +6,8 @@
 use std::{marker::PhantomData, net::SocketAddr, path::Path, sync::Arc};
 
 use async_trait::async_trait;
+#[cfg(feature = "serde")]
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{
@@ -271,6 +273,25 @@ impl<T: Connection> Client<T> {
     /// `RpcSender::send_notification`.
     pub async fn send_notification(&self, method: &str, params: &[Value]) -> Result<()> {
         self.sender.send_notification(method, params).await
+    }
+
+    /// Sends a typed request and deserializes the response.
+    #[cfg(feature = "serde")]
+    pub async fn call<Req, Resp>(&self, method: &str, req: &Req) -> Result<Resp>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        self.sender.call(method, req).await
+    }
+
+    /// Sends a typed notification.
+    #[cfg(feature = "serde")]
+    pub async fn notify<Req>(&self, method: &str, req: &Req) -> Result<()>
+    where
+        Req: Serialize,
+    {
+        self.sender.notify(method, req).await
     }
 
     /// Waits for the client handler task to complete.

@@ -118,7 +118,9 @@ impl Message {
                             let params = match &array[3] {
                                 Value::Array(params) => params.clone(),
                                 _ => {
-                                    return Err(RpcError::Protocol("Invalid request params".into()));
+                                    return Err(RpcError::Protocol(
+                                        "Invalid request params".into(),
+                                    ));
                                 }
                             };
                             Ok(Self::Request(Request { id, method, params }))

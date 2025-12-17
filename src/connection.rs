@@ -3,10 +3,16 @@
 //! Defines structures and traits for managing RPC connections,
 //! handling incoming and outgoing messages, and implementing
 //! RPC services.
+#[cfg(feature = "serde")]
+use std::io::Cursor;
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
 use rmpv::Value;
+#[cfg(feature = "serde")]
+use rmpv::{decode::read_value, encode::write_value};
+#[cfg(feature = "serde")]
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf, split},
     runtime::Handle,
@@ -75,6 +81,56 @@ impl RpcSender {
             .await
             .map_err(|_| RpcError::Disconnect { source: None })
     }
+
+    /// Sends a typed request and deserializes the response.
+    #[cfg(feature = "serde")]
+    pub async fn call<Req, Resp>(&self, method: &str, req: &Req) -> Result<Resp>
+    where
+        Req: Serialize,
+        Resp: DeserializeOwned,
+    {
+        let params = serialize_params(req)?;
+        let value = self.send_request(method, &params).await?;
+        deserialize_response(&value)
+    }
+
+    /// Sends a typed notification.
+    #[cfg(feature = "serde")]
+    pub async fn notify<Req>(&self, method: &str, req: &Req) -> Result<()>
+    where
+        Req: Serialize,
+    {
+        let params = serialize_params(req)?;
+        self.send_notification(method, &params).await
+    }
+}
+
+#[cfg(feature = "serde")]
+/// Serializes a typed request into a MessagePack-RPC params array.
+///
+/// If the encoded value is an array, its elements become the params array. Otherwise, the encoded
+/// value is sent as a single parameter.
+fn serialize_params<Req>(req: &Req) -> Result<Vec<Value>>
+where
+    Req: Serialize,
+{
+    let buf = rmp_serde::to_vec(req)?;
+    let value = read_value(&mut Cursor::new(buf))?;
+    match value {
+        Value::Array(values) => Ok(values),
+        value => Ok(vec![value]),
+    }
+}
+
+#[cfg(feature = "serde")]
+/// Deserializes a typed response from a MessagePack value.
+fn deserialize_response<Resp>(value: &Value) -> Result<Resp>
+where
+    Resp: DeserializeOwned,
+{
+    let mut buf = Vec::new();
+    write_value(&mut buf, value)?;
+    Ok(rmp_serde::from_slice(&buf)?)
 }
 
 /// Handles an RPC connection, processing incoming and outgoing messages.
