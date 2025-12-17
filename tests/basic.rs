@@ -5,9 +5,11 @@
 use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server, ServiceError, Value};
+use mrpc::{
+    Client, Connection, Result, RpcError, RpcSender, Server, ServerHandle, ServiceError, Value,
+};
 use tokio::{
-    sync::Mutex,
+    sync::{Mutex, oneshot},
     task,
     time::{sleep, timeout},
 };
@@ -59,20 +61,18 @@ impl Connection for TestClient {}
 
 #[derive(Clone)]
 struct TestClientConnect {
-    connected_success: Arc<Mutex<bool>>,
+    connected_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 impl TestClientConnect {
-    fn new() -> Self {
-        Self {
-            connected_success: Arc::new(Mutex::new(false)),
-        }
-    }
-}
-
-impl Default for TestClientConnect {
-    fn default() -> Self {
-        Self::new()
+    fn new() -> (Self, oneshot::Receiver<()>) {
+        let (connected_tx, connected_rx) = oneshot::channel();
+        (
+            Self {
+                connected_tx: Arc::new(Mutex::new(Some(connected_tx))),
+            },
+            connected_rx,
+        )
     }
 }
 
@@ -85,56 +85,51 @@ impl Connection for TestClientConnect {
             .await?;
         assert_eq!(result, Value::from(30), "Connected method request failed");
 
-        // Set the flag to indicate successful completion
-        let mut success = self.connected_success.lock().await;
-        *success = true;
+        let connected_tx = self.connected_tx.lock().await.take();
+        if let Some(connected_tx) = connected_tx {
+            let _send_result = connected_tx.send(());
+        }
 
         Ok(())
     }
 }
 
-async fn setup_server_and_client<T: Connection + Default>()
--> Result<(Client<T>, Server<TestServer>)> {
+async fn setup_server_and_client<T: Connection + Default>() -> Result<(Client<T>, ServerHandle)> {
     let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
-    let addr = server.local_addr()?;
-
-    let _server_handle = tokio::spawn(async move {
-        server.run().await.unwrap();
-    });
+    let server_handle = server.spawn().await?;
+    let addr = server_handle.local_addr()?;
 
     let client = Client::connect_tcp(&addr.to_string(), T::default()).await?;
 
-    Ok((client, Server::from_fn(|| TestServer)))
+    Ok((client, server_handle))
 }
 
 async fn setup_server_and_client_with_connect() -> Result<(
     Client<TestClientConnect>,
-    Server<TestServer>,
-    Arc<Mutex<bool>>,
+    ServerHandle,
+    oneshot::Receiver<()>,
 )> {
-    let test_client = TestClientConnect::new();
-    let connected_success = test_client.connected_success.clone();
-
+    let (test_client, connected_rx) = TestClientConnect::new();
     let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
-    let addr = server.local_addr()?;
-
-    let _server_handle = tokio::spawn(async move {
-        server.run().await.unwrap();
-    });
+    let server_handle = server.spawn().await?;
+    let addr = server_handle.local_addr()?;
 
     let client = Client::connect_tcp(&addr.to_string(), test_client).await?;
 
-    Ok((client, Server::from_fn(|| TestServer), connected_success))
+    Ok((client, server_handle, connected_rx))
 }
 
 #[tokio::test]
 async fn test_basic_request_response() -> Result<()> {
-    let (client, _) = setup_server_and_client::<TestClient>().await?;
+    let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
 
     let result = client
         .send_request("add", &[Value::from(5), Value::from(3)])
         .await?;
     assert_eq!(result, Value::from(8));
+
+    server_handle.shutdown();
+    server_handle.join().await?;
 
     Ok(())
 }
@@ -142,17 +137,20 @@ async fn test_basic_request_response() -> Result<()> {
 #[cfg(feature = "serde")]
 #[tokio::test]
 async fn test_typed_call() -> Result<()> {
-    let (client, _) = setup_server_and_client::<TestClient>().await?;
+    let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
 
     let result: i64 = client.call("add", &(5_i64, 3_i64)).await?;
     assert_eq!(result, 8);
+
+    server_handle.shutdown();
+    server_handle.join().await?;
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_method_not_found() -> Result<()> {
-    let (client, _) = setup_server_and_client::<TestClient>().await?;
+    let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
 
     let result = client
         .send_request("non_existent_method", &[Value::from(1)])
@@ -169,12 +167,15 @@ async fn test_method_not_found() -> Result<()> {
         _ => panic!("Expected Service error, got {:?}", result),
     }
 
+    server_handle.shutdown();
+    server_handle.join().await?;
+
     Ok(())
 }
 
 #[tokio::test]
 async fn test_concurrent_requests() -> Result<()> {
-    let (client, _) = setup_server_and_client::<TestClient>().await?;
+    let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
     let client = Arc::new(client);
 
     let num_requests = 100;
@@ -197,6 +198,9 @@ async fn test_concurrent_requests() -> Result<()> {
         handle.await.unwrap()?;
     }
 
+    server_handle.shutdown();
+    server_handle.join().await?;
+
     Ok(())
 }
 
@@ -205,20 +209,16 @@ async fn test_client_request_from_connected() -> Result<()> {
     let timeout_duration = Duration::from_secs(5); // 5 second timeout
 
     let result = timeout(timeout_duration, async {
-        let (_client, _, connected_success) = setup_server_and_client_with_connect().await?;
+        let (_client, server_handle, connected_rx) = setup_server_and_client_with_connect().await?;
 
-        // Wait for the connected method to complete or timeout
-        for _ in 0..50 {
-            // Check every 100ms for 5 seconds
-            if *connected_success.lock().await {
-                return Ok(());
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
+        let connected = connected_rx
+            .await
+            .map_err(|_| RpcError::Protocol("Connected method dropped unexpectedly".into()));
 
-        Err(RpcError::Protocol(
-            "Connected method did not complete in time".into(),
-        ))
+        server_handle.shutdown();
+        server_handle.join().await?;
+
+        connected
     })
     .await;
 

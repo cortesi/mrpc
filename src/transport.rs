@@ -3,7 +3,14 @@
 //! Provides implementations for TCP and Unix domain socket transports,
 //! as well as abstractions for RPC servers and clients.
 
-use std::{marker::PhantomData, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    fs,
+    io::ErrorKind,
+    marker::PhantomData,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 #[cfg(feature = "serde")]
@@ -13,10 +20,10 @@ use tokio::{
     net::{
         TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
     },
-    sync::mpsc,
-    task::JoinHandle,
+    sync::{mpsc, watch},
+    task::{JoinHandle, JoinSet},
 };
-use tracing::trace;
+use tracing::{trace, warn};
 
 use crate::{
     Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
@@ -49,6 +56,8 @@ impl TcpListener {
 struct UnixListener {
     /// The underlying tokio Unix listener.
     inner: TokioUnixListener,
+    /// The path that was bound.
+    path: PathBuf,
 }
 
 impl UnixListener {
@@ -56,8 +65,11 @@ impl UnixListener {
     pub async fn bind<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy();
         trace!("Binding Unix listener to path: {}", path_str);
-        let listener = TokioUnixListener::bind(path)?;
-        Ok(Self { inner: listener })
+        let listener = TokioUnixListener::bind(&path)?;
+        Ok(Self {
+            inner: listener,
+            path: path.as_ref().to_path_buf(),
+        })
     }
 
     /// Accepts an incoming Unix connection.
@@ -65,6 +77,18 @@ impl UnixListener {
         let (stream, _) = self.inner.accept().await?;
         trace!("Accepted Unix connection");
         Ok(RpcConnection::new(stream))
+    }
+}
+
+impl Drop for UnixListener {
+    fn drop(&mut self) {
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => {
+                warn!("Failed to remove unix socket at {:?}: {}", self.path, e);
+            }
+        }
     }
 }
 
@@ -163,42 +187,138 @@ where
         Ok(self)
     }
 
-    /// Starts the server and begins accepting connections.
-    pub async fn run(self) -> Result<()> {
+    /// Starts the server and returns a handle for lifecycle control.
+    pub async fn spawn(self) -> Result<ServerHandle> {
         let listener = self
             .listener
-            .as_ref()
             .ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
-        match listener {
-            Listener::Tcp(tcp_listener) => self.run_internal(tcp_listener).await,
-            Listener::Unix(unix_listener) => self.run_internal(unix_listener).await,
+
+        let local_addr = match &listener {
+            Listener::Tcp(tcp_listener) => Some(tcp_listener.inner.local_addr()?),
+            Listener::Unix(_) => None,
+        };
+
+        let connection_maker = Arc::clone(&self.connection_maker);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            match listener {
+                Listener::Tcp(tcp_listener) => {
+                    run_listener(tcp_listener, connection_maker, shutdown_rx).await
+                }
+                Listener::Unix(unix_listener) => {
+                    run_listener(unix_listener, connection_maker, shutdown_rx).await
+                }
+            }
+        });
+
+        Ok(ServerHandle {
+            shutdown_tx,
+            task,
+            local_addr,
+        })
+    }
+
+    /// Starts the server and begins accepting connections.
+    pub async fn run(self) -> Result<()> {
+        self.spawn().await?.join().await
+    }
+}
+
+/// A handle for controlling a running server.
+#[derive(Debug)]
+pub struct ServerHandle {
+    /// Used to signal shutdown to the accept loop.
+    shutdown_tx: watch::Sender<bool>,
+    /// Background task running the accept loop.
+    task: JoinHandle<Result<()>>,
+    /// The bound TCP address, when using a TCP listener.
+    local_addr: Option<SocketAddr>,
+}
+
+impl ServerHandle {
+    /// Signals the server to stop accepting new connections.
+    pub fn shutdown(&self) {
+        let _send_result = self.shutdown_tx.send(true);
+    }
+
+    /// Waits for the server to stop and returns any error.
+    pub async fn join(self) -> Result<()> {
+        self.task
+            .await
+            .map_err(|e| RpcError::Protocol(e.to_string().into()))?
+    }
+
+    /// Returns the bound TCP address of the server.
+    ///
+    /// This is only valid for TCP listeners; Unix listeners do not have a `SocketAddr`.
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        self.local_addr
+            .ok_or_else(|| RpcError::Protocol("unix sockets don't have a SocketAddr".into()))
+    }
+}
+
+/// Runs an accept loop until shutdown is signalled, cancelling active connection tasks on exit.
+async fn run_listener<T, L>(
+    listener: L,
+    connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Result<()>
+where
+    T: Connection,
+    L: Accept,
+    L::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let mut connections = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            accepted = listener.accept() => {
+                let rpc_conn = accepted?;
+                let connection = connection_maker.make_connection();
+                connections.spawn(async move {
+                    serve_connection(rpc_conn, connection).await;
+                });
+            }
+            Some(joined) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(e) = joined {
+                    warn!("Error joining connection task: {}", e);
+                }
+            }
         }
     }
 
-    /// Internal run loop for accepting connections.
-    async fn run_internal<L>(&self, listener: &L) -> Result<()>
-    where
-        L: Accept,
-        L::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    {
-        loop {
-            let rpc_conn = listener.accept().await?;
-            let connection = self.connection_maker.make_connection();
-            tokio::spawn(async move {
-                let (sender, receiver) = mpsc::channel(100);
-                let mut handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
-                match handler.run(receiver).await {
-                    Ok(()) => {
-                        tracing::trace!("Connection handler finished successfully");
-                    }
-                    Err(RpcError::Disconnect { .. }) => {
-                        tracing::trace!("Client disconnected");
-                    }
-                    Err(e) => {
-                        tracing::warn!("Connection error: {}", e);
-                    }
-                }
-            });
+    connections.abort_all();
+    while let Some(joined) = connections.join_next().await {
+        if let Err(e) = joined {
+            warn!("Error joining connection task: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Serves a single accepted connection until it disconnects.
+async fn serve_connection<S, T>(rpc_conn: RpcConnection<S>, connection: T)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: Connection,
+{
+    let (sender, receiver) = mpsc::channel(100);
+    let mut handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
+    match handler.run(receiver).await {
+        Ok(()) => {
+            trace!("Connection handler finished successfully");
+        }
+        Err(RpcError::Disconnect { .. }) => {
+            trace!("Client disconnected");
+        }
+        Err(e) => {
+            warn!("Connection error: {}", e);
         }
     }
 }

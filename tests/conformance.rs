@@ -2,12 +2,12 @@
 
 #![allow(clippy::tests_outside_test_module)]
 
-use std::{error::Error, sync::Arc, time::Duration};
+use std::{error::Error, sync::Arc};
 
 use async_trait::async_trait;
 use mrpc::{Connection, Result as MrpcResult, RpcError, RpcSender, Server, Value};
 use tempfile::tempdir;
-use tokio::{net::UnixStream, sync::Mutex, time::sleep};
+use tokio::{net::UnixStream, sync::Mutex};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 const PINGS: u32 = 3;
@@ -55,15 +55,7 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn Error>
     })
     .unix(&socket_path)
     .await?;
-
-    let server_task = tokio::spawn(async move {
-        if let Err(e) = server.run().await {
-            panic!("Server error: {}", e);
-        }
-    });
-
-    // Give the server a moment to start up
-    sleep(Duration::from_millis(100)).await;
+    let server_handle = server.spawn().await?;
 
     // Create a msgpack-rpc client
     let socket = UnixStream::connect(&socket_path).await?;
@@ -74,12 +66,7 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn Error>
             .request("ping", &[msgpack_rpc::Value::Integer(i.into())])
             .await
             .unwrap();
-        // Add a small delay between requests
-        sleep(Duration::from_millis(10)).await;
     }
-
-    // Give more time for all pings to be processed
-    sleep(Duration::from_millis(500)).await;
 
     // Check if our server received 10 pings
     let final_count = *pong_counter.lock().await;
@@ -89,6 +76,8 @@ async fn test_mrpc_compatibility_with_msgpack_rpc() -> Result<(), Box<dyn Error>
         PINGS, final_count
     );
 
-    server_task.abort();
+    drop(client);
+    server_handle.shutdown();
+    server_handle.join().await?;
     Ok(())
 }
