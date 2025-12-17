@@ -149,6 +149,16 @@ impl<T> Future for AbortOnDrop<T> {
 }
 
 #[cfg(feature = "serde")]
+/// Serializes a typed value into a MessagePack value.
+pub fn serialize_value<T>(value: &T) -> Result<Value>
+where
+    T: Serialize,
+{
+    let buf = rmp_serde::to_vec_named(value)?;
+    Ok(read_value(&mut Cursor::new(buf))?)
+}
+
+#[cfg(feature = "serde")]
 /// Serializes a typed request into a MessagePack-RPC params array.
 ///
 /// If the encoded value is an array, its elements become the params array. Otherwise, the encoded
@@ -157,8 +167,7 @@ pub fn serialize_params<Req>(req: &Req) -> Result<Vec<Value>>
 where
     Req: Serialize,
 {
-    let buf = rmp_serde::to_vec(req)?;
-    let value = read_value(&mut Cursor::new(buf))?;
+    let value = serialize_value(req)?;
     match value {
         Value::Array(values) => Ok(values),
         value => Ok(vec![value]),
@@ -174,6 +183,38 @@ where
     let mut buf = Vec::new();
     write_value(&mut buf, value)?;
     Ok(rmp_serde::from_slice(&buf)?)
+}
+
+#[cfg(feature = "serde")]
+/// Deserializes a typed request from a MessagePack-RPC params list.
+///
+/// This is intended for servers implementing [`Connection::handle_request`] or
+/// [`Connection::handle_notification`], where incoming parameters are provided as a `Vec<Value>`.
+pub fn deserialize_params<Req>(params: Vec<Value>) -> Result<Req>
+where
+    Req: DeserializeOwned,
+{
+    let value = Value::Array(params);
+    deserialize_response(&value)
+}
+
+#[cfg(feature = "serde")]
+/// Deserializes a typed request from a single MessagePack-RPC parameter.
+///
+/// This is intended for servers implementing [`Connection::handle_request`] or
+/// [`Connection::handle_notification`], where incoming parameters are provided as a `Vec<Value>`.
+pub fn deserialize_param<Req>(params: Vec<Value>) -> Result<Req>
+where
+    Req: DeserializeOwned,
+{
+    let mut values = params.into_iter();
+    let value = values
+        .next()
+        .ok_or_else(|| RpcError::Protocol("Expected exactly one parameter".into()))?;
+    if values.next().is_some() {
+        return Err(RpcError::Protocol("Expected exactly one parameter".into()));
+    }
+    deserialize_response(&value)
 }
 
 /// Handles an RPC connection, processing incoming and outgoing messages.
@@ -604,33 +645,23 @@ where
     pub fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
             // Receiver may be dropped if caller gave up waiting; ignore send errors.
-            drop(sender.send(response.result.map_err(|e| {
-                if let Value::Map(map) = e {
-                    if let (Some(Value::String(name)), Some(value)) = (
-                        map.iter()
-                            .find(|(k, _)| k == &Value::from("name"))
-                            .map(|(_, v)| v),
-                        map.iter()
-                            .find(|(k, _)| k == &Value::from("value"))
-                            .map(|(_, v)| v),
-                    ) {
-                        RpcError::Service(ServiceError {
-                            name: name.as_str().unwrap().to_string(),
-                            value: value.clone(),
-                        })
-                    } else {
-                        RpcError::Service(ServiceError {
-                            name: "UnknownError".to_string(),
-                            value: Value::Map(map),
-                        })
-                    }
-                } else {
-                    RpcError::Service(ServiceError {
-                        name: "RemoteError".to_string(),
-                        value: e,
-                    })
-                }
-            })));
+            drop(
+                sender.send(
+                    response
+                        .result
+                        .map_err(|e| match ServiceError::try_from(e) {
+                            Ok(service_error) => RpcError::Service(service_error),
+                            Err(Value::Map(map)) => RpcError::Service(ServiceError {
+                                name: "UnknownError".to_string(),
+                                value: Value::Map(map),
+                            }),
+                            Err(original_value) => RpcError::Service(ServiceError {
+                                name: "RemoteError".to_string(),
+                                value: original_value,
+                            }),
+                        }),
+                ),
+            );
             Ok(())
         } else {
             Err(RpcError::Protocol(ProtocolError::UnexpectedResponse {

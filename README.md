@@ -14,6 +14,7 @@ A MessagePack-RPC implementation in Rust.
 - Support for bidirectional communication - both servers and clients can handle incoming RPC messages
 - Built on `tokio` for async I/O
 - Uses `rmpv` for MessagePack serialization
+- Optional `serde` feature for typed calls and helpers
 
 
 ## Quick Start
@@ -57,3 +58,34 @@ async fn main() -> Result<()> {
 }
 ```
 
+## Serde Feature
+
+Enable the `serde` feature to unlock typed `call`/`notify` APIs and helpers for converting between
+Rust types and MessagePack values/params.
+
+Typed client-side calls (params and responses):
+
+<!-- snips: examples/serde_support.rs#client -->
+```rust
+client.notify("log", &"hello from serde").await?;
+let sum: i64 = client.call("add", &(5_i64, 3_i64)).await?;
+println!("{sum}");
+```
+
+Typed server-side helpers (decode params and encode responses):
+
+<!-- snips: examples/serde_support.rs#server -->
+```rust
+/// Typed handler for a positional-params method.
+fn add(params: Vec<Value>) -> Result<Value> {
+    let (a, b): (i64, i64) = deserialize_params(params)?;
+    serialize_value(&(a + b))
+}
+
+/// Typed handler for a single-param notification.
+fn log(params: Vec<Value>) -> Result<()> {
+    let message: String = deserialize_param(params)?;
+    println!("{message}");
+    Ok(())
+}
+```

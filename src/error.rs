@@ -119,6 +119,30 @@ impl From<ServiceError> for Value {
     }
 }
 
+impl TryFrom<Value> for ServiceError {
+    type Error = Value;
+
+    fn try_from(value: Value) -> result::Result<Self, Self::Error> {
+        if let Value::Map(ref map) = value {
+            let name = map
+                .iter()
+                .find(|(k, _)| k == &Value::from("name"))
+                .and_then(|(_, v)| v.as_str())
+                .map(|s| s.to_string());
+
+            let val = map
+                .iter()
+                .find(|(k, _)| k == &Value::from("value"))
+                .map(|(_, v)| v.clone());
+
+            if let (Some(name), Some(val)) = (name, val) {
+                return Ok(Self { name, value: val });
+            }
+        }
+        Err(value)
+    }
+}
+
 impl From<io::Error> for RpcError {
     fn from(error: io::Error) -> Self {
         match error.kind() {
