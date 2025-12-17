@@ -22,10 +22,9 @@ impl Connection for SimpleService {
                 println!("Received echo request with params: {:?}", params);
                 Ok(params[0].clone())
             }
-            _ => Err(mrpc::RpcError::Protocol(format!(
-                "Unknown method: {}",
-                method
-            ))),
+            _ => Err(mrpc::RpcError::Protocol(
+                format!("Unknown method: {}", method).into(),
+            )),
         }
     }
 }

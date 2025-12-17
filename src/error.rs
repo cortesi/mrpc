@@ -4,8 +4,39 @@ use std::{
     result,
 };
 
-use rmpv::{decode, encode, Value};
+use rmpv::{Value, decode, encode};
 use thiserror::Error;
+
+/// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
+#[derive(Debug, Error)]
+pub enum ProtocolError {
+    /// Received a message with an invalid type tag.
+    #[error("Invalid message type: {0}")]
+    InvalidMessageType(u64),
+
+    /// Received a response for a request id that has no pending waiter.
+    #[error("Unexpected response id: {id}")]
+    UnexpectedResponse {
+        /// The request id.
+        id: u32,
+    },
+
+    /// Received a message that does not match the expected structure.
+    #[error("Malformed message: {0}")]
+    MalformedMessage(String),
+}
+
+impl From<&str> for ProtocolError {
+    fn from(message: &str) -> Self {
+        Self::MalformedMessage(message.to_string())
+    }
+}
+
+impl From<String> for ProtocolError {
+    fn from(message: String) -> Self {
+        Self::MalformedMessage(message)
+    }
+}
 
 /// Errors that can occur during RPC operations.
 #[derive(Error, Debug)]
@@ -13,6 +44,14 @@ pub enum RpcError {
     /// Error occurred during I/O operations.
     #[error("I/O error: {0}")]
     Io(io::Error),
+
+    /// Error occurred while trying to establish a connection.
+    #[error("Connection failed")]
+    Connect {
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
 
     /// Error occurred during MessagePack serialization.
     #[error("Serialization error: {0}")]
@@ -22,9 +61,9 @@ pub enum RpcError {
     #[error("Deserialization error: {0}")]
     Deserialization(#[from] decode::Error),
 
-    /// Error related to the RPC protocol.
-    #[error("Protocol error: {0}")]
-    Protocol(String),
+    /// Error related to the MessagePack-RPC protocol.
+    #[error(transparent)]
+    Protocol(#[from] ProtocolError),
 
     /// Error returned by the RPC service implementation.
     #[error("Service error: {0}")]
@@ -32,11 +71,11 @@ pub enum RpcError {
 
     /// The connection was closed.
     #[error("Connection disconnected")]
-    Disconnect,
-
-    /// Error occurred while trying to establish a connection.
-    #[error("Failed to connect to {0}")]
-    Connect(String),
+    Disconnect {
+        /// Underlying I/O error, when available.
+        #[source]
+        source: Option<io::Error>,
+    },
 }
 
 /// An error that occurred during the execution of an RPC service method.
@@ -70,10 +109,15 @@ impl From<ServiceError> for Value {
 
 impl From<io::Error> for RpcError {
     fn from(error: io::Error) -> Self {
-        if error.kind() == ErrorKind::UnexpectedEof {
-            Self::Disconnect
-        } else {
-            Self::Io(error)
+        match error.kind() {
+            ErrorKind::UnexpectedEof
+            | ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::NotConnected => Self::Disconnect {
+                source: Some(error),
+            },
+            _ => Self::Io(error),
         }
     }
 }

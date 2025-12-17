@@ -34,10 +34,9 @@ impl Connection for PingPongService {
                 *count += 1;
                 Ok(Value::Boolean(true))
             }
-            _ => Err(RpcError::Protocol(format!(
-                "PingPongService: Unknown method: {}",
-                method
-            ))),
+            _ => Err(RpcError::Protocol(
+                format!("PingPongService: Unknown method: {}", method).into(),
+            )),
         }
     }
 }

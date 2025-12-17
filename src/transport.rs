@@ -17,8 +17,8 @@ use tokio::{
 use tracing::trace;
 
 use crate::{
-    error::*, Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection,
-    RpcSender, Value,
+    Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
+    Value, error::*,
 };
 
 /// TCP listener for accepting RPC connections.
@@ -189,7 +189,7 @@ where
                     Ok(()) => {
                         tracing::trace!("Connection handler finished successfully");
                     }
-                    Err(RpcError::Disconnect) => {
+                    Err(RpcError::Disconnect { .. }) => {
                         tracing::trace!("Client disconnected");
                     }
                     Err(e) => {
@@ -218,7 +218,7 @@ impl<T: Connection> Client<T> {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let stream = UnixStream::connect(path)
             .await
-            .map_err(|_e| RpcError::Connect(format!("unix socket at {}", path_str)))?;
+            .map_err(|source| RpcError::Connect { source })?;
         trace!("Unix connection established to: {:?}", path_str);
         Self::new(RpcConnection::new(stream), service).await
     }
@@ -227,7 +227,7 @@ impl<T: Connection> Client<T> {
     pub async fn connect_tcp(addr: &str, service: T) -> Result<Self> {
         let stream = TcpStream::connect(addr)
             .await
-            .map_err(|_e| RpcError::Connect(addr.to_string()))?;
+            .map_err(|source| RpcError::Connect { source })?;
         trace!("TCP connection established to: {}", addr);
         Self::new(RpcConnection::new(stream), service).await
     }
@@ -245,7 +245,7 @@ impl<T: Connection> Client<T> {
         let handler_task = tokio::spawn(async move {
             if let Err(e) = handler.run(receiver).await {
                 match e {
-                    RpcError::Disconnect => {
+                    RpcError::Disconnect { .. } => {
                         tracing::trace!("Client disconnected");
                     }
                     e => {
@@ -277,7 +277,7 @@ impl<T: Connection> Client<T> {
     pub async fn join(self) -> Result<()> {
         self.handle
             .await
-            .map_err(|e| RpcError::Protocol(e.to_string()))?;
+            .map_err(|e| RpcError::Protocol(e.to_string().into()))?;
         Ok(())
     }
 }

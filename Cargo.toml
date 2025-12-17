@@ -1,7 +1,7 @@
 [package]
 name = "mrpc"
-version = "0.0.6"
-edition = "2021"
+version = "0.0.7"
+edition = "2024"
 authors = ["Aldo Cortesi <aldo@corte.si>"]
 description = "MessagePack-RPC for Rust"
 license = "MIT"

@@ -8,15 +8,15 @@ use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 use async_trait::async_trait;
 use rmpv::Value;
 use tokio::{
-    io::{split, AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, WriteHalf, split},
     runtime::Handle,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{Mutex, mpsc, oneshot},
 };
 use tokio_util::io::SyncIoBridge;
 use tracing::{error, trace, warn};
 
 use crate::{
-    error::{Result, RpcError, ServiceError},
+    error::{ProtocolError, Result, RpcError, ServiceError},
     message::*,
 };
 
@@ -59,10 +59,10 @@ impl RpcSender {
                 response_sender,
             })
             .await
-            .map_err(|_| RpcError::Protocol("Failed to send request".to_string()))?;
+            .map_err(|_| RpcError::Disconnect { source: None })?;
         response_receiver
             .await
-            .map_err(|_| RpcError::Protocol("Failed to receive response".to_string()))?
+            .map_err(|_| RpcError::Disconnect { source: None })?
     }
 
     /// Sends an RPC notification without waiting for a response.
@@ -73,7 +73,7 @@ impl RpcSender {
                 params: params.to_vec(),
             })
             .await
-            .map_err(|_| RpcError::Protocol("Failed to send notification".to_string()))
+            .map_err(|_| RpcError::Disconnect { source: None })
     }
 }
 
@@ -149,7 +149,7 @@ where
                             let handler = tokio::spawn(async move {
                                 if let Err(e) = handle_incoming_message(connection, service, rpc_sender, message).await {
                                     error!("Error handling incoming message: {}", e);
-                                    if matches!(e, RpcError::Disconnect) {
+                                    if matches!(e, RpcError::Disconnect { .. }) {
                                         return Err(e);
                                     }
                                 }
@@ -375,10 +375,9 @@ pub trait Connection: Send + Sync + 'static {
         params: Vec<Value>,
     ) -> Result<Value> {
         tracing::warn!("Unhandled request: method={}, params={:?}", method, params);
-        Err(RpcError::Protocol(format!(
-            "Method '{}' not implemented",
-            method
-        )))
+        Err(RpcError::Protocol(
+            format!("Method '{}' not implemented", method).into(),
+        ))
     }
 
     /// Handles an incoming RPC notification.
@@ -495,10 +494,9 @@ where
             })));
             Ok(())
         } else {
-            Err(RpcError::Protocol(format!(
-                "Received response for unknown request id: {}",
-                response.id
-            )))
+            Err(RpcError::Protocol(ProtocolError::UnexpectedResponse {
+                id: response.id,
+            }))
         }
     }
 

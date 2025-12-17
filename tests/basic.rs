@@ -93,8 +93,8 @@ impl Connection for TestClientConnect {
     }
 }
 
-async fn setup_server_and_client<T: Connection + Default>(
-) -> Result<(Client<T>, Server<TestServer>)> {
+async fn setup_server_and_client<T: Connection + Default>()
+-> Result<(Client<T>, Server<TestServer>)> {
     let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
     let addr = server.local_addr()?;
 

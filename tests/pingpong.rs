@@ -31,10 +31,9 @@ impl Connection for PingService {
         method: &str,
         _params: Vec<Value>,
     ) -> mrpc::Result<Value> {
-        Err(RpcError::Protocol(format!(
-            "PingService: Unknown method: {}",
-            method
-        )))
+        Err(RpcError::Protocol(
+            format!("PingService: Unknown method: {}", method).into(),
+        ))
     }
 
     async fn handle_notification(
@@ -77,10 +76,9 @@ impl Connection for PongService {
                     .await?;
                 Ok(Value::Boolean(true))
             }
-            _ => Err(RpcError::Protocol(format!(
-                "PongService: Unknown method: {}",
-                method
-            ))),
+            _ => Err(RpcError::Protocol(
+                format!("PongService: Unknown method: {}", method).into(),
+            )),
         }
     }
 }

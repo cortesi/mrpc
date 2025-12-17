@@ -2,7 +2,7 @@
 
 use std::{future::Future, hint::black_box, path::PathBuf};
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use mrpc::{Client, Connection, Result, RpcError, RpcSender, Server};
 use rmpv::Value;
 use tempfile::tempdir;
@@ -27,7 +27,9 @@ impl Connection for BenchService {
                 let b = params[1].as_i64().unwrap();
                 Ok(Value::Integer((a + b).into()))
             }
-            _ => Err(RpcError::Protocol(format!("Unknown method: {}", method))),
+            _ => Err(RpcError::Protocol(
+                format!("Unknown method: {}", method).into(),
+            )),
         }
     }
 }

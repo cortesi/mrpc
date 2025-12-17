@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! MessagePack-RPC implementation in Rust.
 //!
 //! Provides asynchronous RPC servers and clients over TCP and Unix domain sockets.

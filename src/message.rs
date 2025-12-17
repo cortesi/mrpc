@@ -8,9 +8,9 @@ use std::{
 };
 
 use rmpv::{
+    Value,
     decode::{self, read_value},
     encode::write_value,
-    Value,
 };
 
 use crate::error::*;
@@ -118,7 +118,7 @@ impl Message {
                             let params = match &array[3] {
                                 Value::Array(params) => params.clone(),
                                 _ => {
-                                    return Err(RpcError::Protocol("Invalid request params".into()))
+                                    return Err(RpcError::Protocol("Invalid request params".into()));
                                 }
                             };
                             Ok(Self::Request(Request { id, method, params }))
@@ -155,12 +155,15 @@ impl Message {
                                 _ => {
                                     return Err(RpcError::Protocol(
                                         "Invalid notification params".into(),
-                                    ))
+                                    ));
                                 }
                             };
                             Ok(Self::Notification(Notification { method, params }))
                         }
-                        _ => Err(RpcError::Protocol("Invalid message type".into())),
+                        Some(other) => {
+                            Err(RpcError::Protocol(ProtocolError::InvalidMessageType(other)))
+                        }
+                        None => Err(RpcError::Protocol("Invalid message type".into())),
                     },
                     _ => Err(RpcError::Protocol("Invalid message type".into())),
                 }
