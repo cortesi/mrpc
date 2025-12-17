@@ -5,9 +5,13 @@
 //! RPC services.
 use std::{
     collections::HashMap,
+    future::Future,
     io::{Cursor, ErrorKind},
     marker::PhantomData,
+    pin::Pin,
+    result,
     sync::Arc,
+    task::{Context, Poll},
 };
 
 use async_trait::async_trait;
@@ -19,7 +23,8 @@ use rmpv::{decode::read_value, encode::write_value};
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, WriteHalf, split},
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot, watch},
+    task::{JoinError, JoinHandle, JoinSet},
 };
 use tracing::{error, trace, warn};
 
@@ -107,12 +112,48 @@ impl RpcSender {
     }
 }
 
+/// Wraps a [`JoinHandle`] and aborts it on drop.
+///
+/// This keeps spawned tasks from leaking if an async function is cancelled while the task is still
+/// running.
+struct AbortOnDrop<T> {
+    /// The wrapped task handle.
+    handle: JoinHandle<T>,
+}
+
+impl<T> AbortOnDrop<T> {
+    /// Wrap a task handle that should be aborted when dropped.
+    fn new(handle: JoinHandle<T>) -> Self {
+        Self { handle }
+    }
+
+    /// Abort the wrapped task.
+    fn abort(&self) {
+        self.handle.abort();
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = result::Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Pin::new(&mut this.handle).poll(cx)
+    }
+}
+
 #[cfg(feature = "serde")]
 /// Serializes a typed request into a MessagePack-RPC params array.
 ///
 /// If the encoded value is an array, its elements become the params array. Otherwise, the encoded
 /// value is sent as a single parameter.
-fn serialize_params<Req>(req: &Req) -> Result<Vec<Value>>
+pub fn serialize_params<Req>(req: &Req) -> Result<Vec<Value>>
 where
     Req: Serialize,
 {
@@ -126,7 +167,7 @@ where
 
 #[cfg(feature = "serde")]
 /// Deserializes a typed response from a MessagePack value.
-fn deserialize_response<Resp>(value: &Value) -> Result<Resp>
+pub fn deserialize_response<Resp>(value: &Value) -> Result<Resp>
 where
     Resp: DeserializeOwned,
 {
@@ -153,7 +194,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     /// Creates a new connection handler.
-    pub fn new(
+    pub(crate) fn new(
         connection: RpcConnection<S>,
         service: T,
         client_sender: mpsc::Sender<ClientMessage>,
@@ -168,17 +209,14 @@ where
     }
 
     /// Runs the connection handler, processing messages until the connection closes.
-    pub async fn run(&mut self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
-        let (connected_tx, mut connected_rx) = oneshot::channel();
+    pub(crate) async fn run(&self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
         let rpc_sender_clone = self.rpc_sender.clone();
 
-        // Spawn the connected method in a separate task
+        // Run the connected handler concurrently so it can send messages immediately.
         let service = Arc::clone(&self.service);
-        tokio::spawn(async move {
-            let result = service.connected(rpc_sender_clone).await;
-            // Receiver may be dropped if connection handler exits early; ignore send errors.
-            drop(connected_tx.send(result));
-        });
+        let mut connected_task = AbortOnDrop::new(tokio::spawn(async move {
+            service.connected(rpc_sender_clone).await
+        }));
 
         let mut connected_done = false;
         let mut receiver = {
@@ -190,51 +228,45 @@ where
         let connection_clone = self.connection.clone();
 
         // Spawn a task to handle client messages
-        let client_handler = tokio::spawn(async move {
-            handle_client_messages(connection_clone, client_receiver).await;
-        });
+        let client_handler = AbortOnDrop::new(tokio::spawn(async move {
+            handle_client_messages(connection_clone, client_receiver).await
+        }));
 
-        let mut incoming_handlers = Vec::new();
+        let mut incoming_handlers: JoinSet<()> = JoinSet::new();
 
         loop {
             tokio::select! {
-                Some(message_result) = receiver.recv() => {
+                message_result = receiver.recv() => {
                     match message_result {
-                        Ok(message) => {
+                        Some(Ok(message)) => {
                             let connection = self.connection.clone();
                             let service = Arc::clone(&self.service);
                             let rpc_sender = self.rpc_sender.clone();
-                            let handler = tokio::spawn(async move {
+                            incoming_handlers.spawn(async move {
                                 if let Err(e) = handle_incoming_message(connection, service, rpc_sender, message).await {
                                     error!("Error handling incoming message: {}", e);
-                                    if matches!(e, RpcError::Disconnect { .. }) {
-                                        return Err(e);
-                                    }
                                 }
-                                Ok(())
                             });
-                            incoming_handlers.push(handler);
                         }
-                        Err(e) => {
-                            return Err(e);
-                        }
+                        Some(Err(e)) => return Err(e),
+                        None => break,
                     }
                 }
-                connected_result = &mut connected_rx, if !connected_done => {
+                connected_result = &mut connected_task, if !connected_done => {
                     connected_done = true;
                     match connected_result {
-                        Ok(Ok(())) => {
-                            // Connected method succeeded, continue with the loop
-                        }
-                        Ok(Err(e)) => {
-                            // Connected method returned an error
-                            return Err(e);
-                        }
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => return Err(e),
                         Err(_) => {
-                            // Connected task was cancelled or panicked
                             return Err(RpcError::Protocol("Connected task failed".into()));
                         }
                     }
+                }
+                Some(joined) = incoming_handlers.join_next(), if !incoming_handlers.is_empty() => {
+                    if let Err(e) = joined
+                        && !e.is_cancelled() {
+                            error!("Error joining incoming message handler: {}", e);
+                        }
                 }
                 else => {
                     break;
@@ -242,12 +274,14 @@ where
             }
         }
 
-        // Cancel the client handler task
+        connected_task.abort();
         client_handler.abort();
+        incoming_handlers.abort_all();
 
-        // Wait for all incoming message handlers to complete
-        for handler in incoming_handlers {
-            if let Err(e) = handler.await {
+        while let Some(joined) = incoming_handlers.join_next().await {
+            if let Err(e) = joined
+                && !e.is_cancelled()
+            {
                 error!("Error joining incoming message handler: {}", e);
             }
         }
@@ -472,6 +506,10 @@ where
     next_request_id: u32,
     /// Pending requests awaiting responses.
     pending_requests: HashMap<u32, oneshot::Sender<Result<Value>>>,
+    /// Used to request shutdown of the background reader task.
+    shutdown_tx: watch::Sender<bool>,
+    /// Background task reading and decoding incoming RPC messages.
+    read_task: JoinHandle<()>,
 }
 
 impl<S> RpcConnection<S>
@@ -482,13 +520,18 @@ where
     pub fn new(stream: S) -> Self {
         let (read_half, write_half) = split(stream);
         let (message_sender, message_receiver) = mpsc::channel(1000);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-        tokio::spawn(async move {
+        let read_task = tokio::spawn(async move {
             let mut read_half = read_half;
             let mut buffer = BytesMut::with_capacity(8192);
             let mut eof = false;
 
             loop {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+
                 match try_decode_message(&buffer) {
                     Ok(Some((message, consumed))) => {
                         buffer.advance(consumed);
@@ -505,17 +548,27 @@ where
                         );
                         break;
                     }
-                    Ok(None) => match read_half.read_buf(&mut buffer).await {
-                        Ok(0) => {
-                            eof = true;
+                    Ok(None) => {
+                        let read_result = tokio::select! {
+                            _ = shutdown_rx.changed() => {
+                                continue;
+                            }
+                            read_result = read_half.read_buf(&mut buffer) => {
+                                read_result
+                            }
+                        };
+                        match read_result {
+                            Ok(0) => {
+                                eof = true;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                // Receiver dropped means handler exited; ignore send errors.
+                                drop(message_sender.send(Err(RpcError::from(e))).await);
+                                break;
+                            }
                         }
-                        Ok(_) => {}
-                        Err(e) => {
-                            // Receiver dropped means handler exited; ignore send errors.
-                            drop(message_sender.send(Err(RpcError::from(e))).await);
-                            break;
-                        }
-                    },
+                    }
                     Err(e) => {
                         // Receiver dropped means handler exited; ignore send errors.
                         drop(message_sender.send(Err(e)).await);
@@ -530,7 +583,14 @@ where
             next_request_id: 1,
             pending_requests: HashMap::new(),
             message_receiver: Some(message_receiver),
+            shutdown_tx,
+            read_task,
         }
+    }
+
+    /// Returns a sender used to request shutdown of the background reader task.
+    pub(crate) fn shutdown_sender(&self) -> watch::Sender<bool> {
+        self.shutdown_tx.clone()
     }
 
     /// Takes ownership of the message receiver channel.
@@ -608,6 +668,15 @@ where
         let notification = Notification { method, params };
         self.write_message(&Message::Notification(notification))
             .await
+    }
+}
+
+impl<S> Drop for RpcConnection<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn drop(&mut self) {
+        self.read_task.abort();
     }
 }
 

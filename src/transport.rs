@@ -27,8 +27,9 @@ use tokio::{
 use tracing::{trace, warn};
 
 use crate::{
-    Connection, ConnectionHandler, ConnectionMaker, ConnectionMakerFn, RpcConnection, RpcSender,
-    Value, error::*,
+    Connection, ConnectionMaker, ConnectionMakerFn, RpcSender, Value,
+    connection::{ConnectionHandler, RpcConnection},
+    error::*,
 };
 
 /// Create a pair of connected in-memory streams.
@@ -349,7 +350,7 @@ where
     T: Connection,
 {
     let (sender, receiver) = mpsc::channel(100);
-    let mut handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
+    let handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
     match handler.run(receiver).await {
         Ok(()) => {
             trace!("Connection handler finished successfully");
@@ -369,7 +370,9 @@ pub struct Client<T: Connection> {
     /// Sender for sending RPC requests and notifications.
     pub sender: RpcSender,
     /// Handle to the background connection handler task.
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
+    /// Used to request shutdown of the background connection handler.
+    shutdown_tx: watch::Sender<bool>,
     /// Phantom data for the connection type.
     _phantom: PhantomData<T>,
 }
@@ -407,11 +410,12 @@ impl<T: Connection> Client<T> {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        let shutdown_tx = connection.shutdown_sender();
         let (sender, receiver) = mpsc::channel(100);
         let rpc_sender = RpcSender {
             sender: sender.clone(),
         };
-        let mut handler = ConnectionHandler::new(connection, service, sender);
+        let handler = ConnectionHandler::new(connection, service, sender);
         let handler_task = tokio::spawn(async move {
             if let Err(e) = handler.run(receiver).await {
                 match e {
@@ -427,7 +431,8 @@ impl<T: Connection> Client<T> {
 
         Ok(Self {
             sender: rpc_sender,
-            handle: handler_task,
+            handle: Some(handler_task),
+            shutdown_tx,
             _phantom: PhantomData,
         })
     }
@@ -463,10 +468,34 @@ impl<T: Connection> Client<T> {
     }
 
     /// Waits for the client handler task to complete.
-    pub async fn join(self) -> Result<()> {
-        self.handle
+    pub async fn join(mut self) -> Result<()> {
+        let handle = self
+            .handle
+            .take()
+            .expect("Client join called with no handler task");
+        handle
             .await
             .map_err(|e| RpcError::Protocol(e.to_string().into()))?;
         Ok(())
+    }
+
+    /// Signals the client to stop processing messages and close the connection.
+    pub fn shutdown(&self) {
+        let _send_result = self.shutdown_tx.send(true);
+    }
+
+    /// Shuts down the client and waits for the handler task to complete.
+    pub async fn close(self) -> Result<()> {
+        self.shutdown();
+        self.join().await
+    }
+}
+
+impl<T: Connection> Drop for Client<T> {
+    fn drop(&mut self) {
+        let _send_result = self.shutdown_tx.send(true);
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
     }
 }
