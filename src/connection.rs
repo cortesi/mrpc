@@ -37,7 +37,7 @@ use crate::{
 
 /// Internal message type for communication between the client API and the connection handler.
 #[derive(Debug)]
-pub enum ClientMessage {
+enum ClientMessage {
     /// An RPC request with a response channel.
     Request {
         /// Msgpack-RPC `msgid` assigned by [`RpcSender`] before enqueue.
@@ -62,7 +62,7 @@ pub enum ClientMessage {
 #[derive(Debug, Clone)]
 pub struct RpcSender {
     /// Channel sender for client messages.
-    pub(crate) sender: mpsc::Sender<ClientMessage>,
+    sender: mpsc::Sender<ClientMessage>,
     /// Shared counter producing the msgpack-RPC `msgid` for each outbound
     /// request. Lives behind [`Arc`] so every clone of an [`RpcSender`]
     /// draws from the same id space.
@@ -71,7 +71,7 @@ pub struct RpcSender {
 
 impl RpcSender {
     /// Constructs a sender over `channel`. Ids are minted from 1 upward.
-    pub(crate) fn new(channel: mpsc::Sender<ClientMessage>) -> Self {
+    fn new(channel: mpsc::Sender<ClientMessage>) -> Self {
         Self {
             sender: channel,
             next_id: Arc::new(AtomicU32::new(1)),
@@ -276,7 +276,7 @@ where
 }
 
 /// Handles an RPC connection, processing incoming and outgoing messages.
-pub struct ConnectionHandler<S, T: Connection>
+struct ConnectionHandler<S, T: Connection>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -296,7 +296,7 @@ where
     /// passed to the service's `connected` callback; callers that also
     /// hand out their own sender (for example, [`Client`]) must pass a
     /// clone so both share one `msgid` counter.
-    pub(crate) fn new(connection: RpcConnection<S>, service: T, rpc_sender: RpcSender) -> Self {
+    fn new(connection: RpcConnection<S>, service: T, rpc_sender: RpcSender) -> Self {
         Self {
             connection: Arc::new(Mutex::new(connection)),
             service: Arc::new(service),
@@ -305,7 +305,7 @@ where
     }
 
     /// Runs the connection handler, processing messages until the connection closes.
-    pub(crate) async fn run(&self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
+    async fn run(&self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
         let rpc_sender_clone = self.rpc_sender.clone();
 
         // Run the connected handler concurrently so it can send messages immediately.
@@ -483,6 +483,67 @@ fn response_error_value(error: RpcError) -> Value {
     }
 }
 
+/// Shared runtime state for a live connection handler.
+///
+/// This bundles the handler task inputs so transport code can start a client
+/// or accepted server connection without depending on lower-level connection
+/// plumbing types.
+pub struct ConnectionRuntime<S, T: Connection>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    /// The connection handler that processes inbound and outbound messages.
+    handler: ConnectionHandler<S, T>,
+    /// Client-side messages queued for the handler to send on the wire.
+    client_receiver: mpsc::Receiver<ClientMessage>,
+    /// Sender exposed to callers for issuing requests and notifications.
+    rpc_sender: RpcSender,
+    /// Shutdown handle for the background reader loop.
+    shutdown_tx: watch::Sender<bool>,
+}
+
+impl<S, T> ConnectionRuntime<S, T>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: Connection,
+{
+    /// Creates a runtime from a bidirectional stream and connection service.
+    pub fn new(stream: S, service: T) -> Self {
+        let connection = RpcConnection::new(stream);
+        let shutdown_tx = connection.shutdown_sender();
+        let (sender, client_receiver) = mpsc::channel(100);
+        let rpc_sender = RpcSender::new(sender);
+        let handler = ConnectionHandler::new(connection, service, rpc_sender.clone());
+
+        Self {
+            handler,
+            client_receiver,
+            rpc_sender,
+            shutdown_tx,
+        }
+    }
+
+    /// Returns a sender for issuing RPC requests and notifications.
+    pub fn sender(&self) -> RpcSender {
+        self.rpc_sender.clone()
+    }
+
+    /// Returns a shutdown handle for the background reader task.
+    pub fn shutdown_sender(&self) -> watch::Sender<bool> {
+        self.shutdown_tx.clone()
+    }
+
+    /// Runs the connection handler until the stream closes or shutdown is requested.
+    pub async fn run(self) -> Result<()> {
+        let Self {
+            handler,
+            client_receiver,
+            ..
+        } = self;
+        handler.run(client_receiver).await
+    }
+}
+
 /// A trait for creating connections.
 ///
 /// `ConnectionMaker` provides a generic way to create objects that implement the `Connection` trait.
@@ -582,7 +643,7 @@ impl Connection for () {}
 
 /// Low-level RPC connection handler for reading and writing messages over a stream.
 #[derive(Debug)]
-pub struct RpcConnection<S>
+struct RpcConnection<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -603,7 +664,7 @@ where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     /// Creates a new RpcConnection with the given stream.
-    pub fn new(stream: S) -> Self {
+    fn new(stream: S) -> Self {
         let (read_half, write_half) = split(stream);
         let (message_sender, message_receiver) = mpsc::channel(1000);
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -674,19 +735,19 @@ where
     }
 
     /// Returns a sender used to request shutdown of the background reader task.
-    pub(crate) fn shutdown_sender(&self) -> watch::Sender<bool> {
+    fn shutdown_sender(&self) -> watch::Sender<bool> {
         self.shutdown_tx.clone()
     }
 
     /// Takes ownership of the message receiver channel.
-    pub(crate) fn take_receiver(&mut self) -> Result<mpsc::Receiver<Result<Message>>> {
+    fn take_receiver(&mut self) -> Result<mpsc::Receiver<Result<Message>>> {
         self.message_receiver
             .take()
             .ok_or_else(|| RpcError::resource_already_taken("message receiver"))
     }
 
     /// Handles an incoming response message, routing it to the appropriate pending request.
-    pub fn handle_response(&mut self, response: Response) -> Result<()> {
+    fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
             // Receiver may be dropped if caller gave up waiting; ignore send errors.
             drop(sender.send(response.result.map_err(RpcError::from_remote_error_value)));
@@ -699,7 +760,7 @@ where
     }
 
     /// Encodes and writes a message to the stream.
-    pub async fn write_message(&mut self, message: &Message) -> Result<()> {
+    async fn write_message(&mut self, message: &Message) -> Result<()> {
         trace!("sending message: {:?}", message);
         let mut buffer = Vec::new();
         message.encode(&mut buffer)?;
@@ -711,7 +772,7 @@ where
     /// Sends an RPC request with the supplied `msgid` and registers the
     /// response channel. The id is minted by [`RpcSender`] before the
     /// message reaches this layer.
-    pub async fn send_request(
+    async fn send_request(
         &mut self,
         id: u32,
         method: String,
@@ -724,7 +785,7 @@ where
     }
 
     /// Sends an RPC notification (no response expected).
-    pub async fn send_notification(&mut self, method: String, params: Vec<Value>) -> Result<()> {
+    async fn send_notification(&mut self, method: String, params: Vec<Value>) -> Result<()> {
         let notification = Notification { method, params };
         self.write_message(&Message::Notification(notification))
             .await

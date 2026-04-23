@@ -20,14 +20,14 @@ use tokio::{
     net::{
         TcpListener as TokioTcpListener, TcpStream, UnixListener as TokioUnixListener, UnixStream,
     },
-    sync::{mpsc, watch},
+    sync::watch,
     task::{JoinHandle, JoinSet},
 };
 use tracing::{trace, warn};
 
 use crate::{
     Connection, ConnectionMaker, RequestHandle, RpcSender, Value,
-    connection::{ConnectionHandler, ConnectionMakerFn, RpcConnection},
+    connection::{ConnectionMakerFn, ConnectionRuntime},
     error::*,
 };
 
@@ -101,7 +101,7 @@ struct TcpListener {
 
 impl TcpListener {
     /// Binds a TCP listener to the given address.
-    pub async fn bind(addr: &str) -> Result<Self> {
+    async fn bind(addr: &str) -> Result<Self> {
         trace!("Binding TCP listener to address: {}", addr);
         let listener = TokioTcpListener::bind(addr).await?;
         Ok(Self { inner: listener })
@@ -129,7 +129,7 @@ struct UnixListener {
 
 impl UnixListener {
     /// Binds a Unix listener to the given path.
-    pub async fn bind<P: AsRef<Path>>(path: P) -> Result<Self> {
+    async fn bind<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_str = path.as_ref().to_string_lossy();
         trace!("Binding Unix listener to path: {}", path_str);
         let listener = TokioUnixListener::bind(&path)?;
@@ -349,10 +349,9 @@ where
             }
             accepted = listener.accept() => {
                 let stream = accepted?;
-                let rpc_conn = RpcConnection::new(stream);
                 let connection = connection_maker.make_connection();
                 connections.spawn(async move {
-                    serve_connection(rpc_conn, connection).await;
+                    serve_connection(stream, connection).await;
                 });
             }
             Some(joined) = connections.join_next(), if !connections.is_empty() => {
@@ -374,15 +373,13 @@ where
 }
 
 /// Serves a single accepted connection until it disconnects.
-async fn serve_connection<S, T>(rpc_conn: RpcConnection<S>, connection: T)
+async fn serve_connection<S, T>(stream: S, connection: T)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     T: Connection,
 {
-    let (sender, receiver) = mpsc::channel(100);
-    let rpc_sender = RpcSender::new(sender);
-    let handler = ConnectionHandler::new(rpc_conn, connection, rpc_sender);
-    match handler.run(receiver).await {
+    let runtime = ConnectionRuntime::new(stream, connection);
+    match runtime.run().await {
         Ok(()) => {
             trace!("Connection handler finished successfully");
         }
@@ -413,7 +410,7 @@ impl Client {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         T: Connection,
     {
-        Self::new(RpcConnection::new(stream), service).await
+        Self::new(stream, service).await
     }
 
     /// Creates a new client connected to a Unix domain socket.
@@ -427,7 +424,7 @@ impl Client {
             .await
             .map_err(|source| RpcError::Connect { source })?;
         trace!("Unix connection established to: {:?}", path_str);
-        Self::new(RpcConnection::new(stream), service).await
+        Self::new(stream, service).await
     }
 
     /// Creates a new client connected to a TCP address.
@@ -439,21 +436,20 @@ impl Client {
             .await
             .map_err(|source| RpcError::Connect { source })?;
         trace!("TCP connection established to: {}", addr);
-        Self::new(RpcConnection::new(stream), service).await
+        Self::new(stream, service).await
     }
 
     /// Creates a new client from an existing RPC connection.
-    async fn new<S, T>(connection: RpcConnection<S>, service: T) -> Result<Self>
+    async fn new<S, T>(stream: S, service: T) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         T: Connection,
     {
-        let shutdown_tx = connection.shutdown_sender();
-        let (sender, receiver) = mpsc::channel(100);
-        let rpc_sender = RpcSender::new(sender);
-        let handler = ConnectionHandler::new(connection, service, rpc_sender.clone());
+        let runtime = ConnectionRuntime::new(stream, service);
+        let shutdown_tx = runtime.shutdown_sender();
+        let rpc_sender = runtime.sender();
         let handler_task = tokio::spawn(async move {
-            if let Err(e) = handler.run(receiver).await {
+            if let Err(e) = runtime.run().await {
                 match e {
                     RpcError::Disconnect { .. } => {
                         tracing::trace!("Client disconnected");
