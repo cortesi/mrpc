@@ -241,6 +241,20 @@ async fn test_duplex_transport() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_server_local_addr_reports_configuration_state() -> Result<()> {
+    let unconfigured = Server::from_fn(|| TestServer);
+    assert!(unconfigured.local_addr().is_err());
+
+    let (_client_stream, server_stream) = duplex(1024);
+    let custom_listener = Server::from_fn(|| TestServer).with_listener(OnceListener {
+        stream: Mutex::new(Some(server_stream)),
+    })?;
+    assert!(custom_listener.local_addr().is_err());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_client_request_from_connected() -> Result<()> {
     let timeout_duration = Duration::from_secs(5); // 5 second timeout
 

@@ -6,7 +6,6 @@
 use std::{
     fs,
     io::ErrorKind,
-    marker::PhantomData,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -70,6 +69,27 @@ where
 
     async fn accept(&self) -> Result<Self::Stream> {
         Ok(Box::new(self.inner.accept().await?))
+    }
+}
+
+/// A listener that has been configured on a [`Server`].
+struct ConfiguredListener {
+    /// The erased listener used by the accept loop.
+    listener: Box<dyn Listener<Stream = BoxedStream>>,
+    /// The bound TCP address, when the listener exposes one.
+    local_addr: Option<SocketAddr>,
+}
+
+impl ConfiguredListener {
+    /// Returns the bound TCP address when this listener has one.
+    fn local_addr(&self) -> Result<SocketAddr> {
+        self.local_addr
+            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
+    }
+
+    /// Splits the configured listener into its runtime pieces.
+    fn into_parts(self) -> (Box<dyn Listener<Stream = BoxedStream>>, Option<SocketAddr>) {
+        (self.listener, self.local_addr)
     }
 }
 
@@ -154,11 +174,7 @@ where
     /// Factory for creating connection handlers.
     connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
     /// The configured listener.
-    listener: Option<Box<dyn Listener<Stream = BoxedStream>>>,
-    /// The bound TCP address, when applicable.
-    local_addr: Option<SocketAddr>,
-    /// Phantom data for the connection type.
-    _phantom: PhantomData<T>,
+    listener: Option<ConfiguredListener>,
 }
 
 impl<T> Server<T>
@@ -173,8 +189,6 @@ where
         Self {
             connection_maker: Arc::new(maker),
             listener: None,
-            local_addr: None,
-            _phantom: PhantomData,
         }
     }
 
@@ -189,29 +203,33 @@ where
     /// Returns the bound address of the server. Only valid for TCP listeners that have already
     /// been bound, otherwise returns an error.
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        if self.listener.is_none() {
-            return Err(RpcError::Protocol("No listener configured".into()));
-        }
-        self.local_addr
-            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
+        self.listener
+            .as_ref()
+            .ok_or_else(|| RpcError::Protocol("No listener configured".into()))?
+            .local_addr()
     }
 
     /// Configures the server to listen on a TCP address.
     pub async fn tcp(mut self, addr: &str) -> Result<Self> {
         let tcp_listener = TcpListener::bind(addr).await?;
-        self.local_addr = Some(tcp_listener.inner.local_addr()?);
-        self.listener = Some(Box::new(ErasedListener {
-            inner: tcp_listener,
-        }));
+        let local_addr = Some(tcp_listener.inner.local_addr()?);
+        self.configure_listener(
+            Box::new(ErasedListener {
+                inner: tcp_listener,
+            }),
+            local_addr,
+        );
         Ok(self)
     }
 
     /// Configures the server to listen on a Unix domain socket.
     pub async fn unix<P: AsRef<Path>>(mut self, path: P) -> Result<Self> {
-        self.local_addr = None;
-        self.listener = Some(Box::new(ErasedListener {
-            inner: UnixListener::bind(path).await?,
-        }));
+        self.configure_listener(
+            Box::new(ErasedListener {
+                inner: UnixListener::bind(path).await?,
+            }),
+            None,
+        );
         Ok(self)
     }
 
@@ -220,8 +238,7 @@ where
     where
         L: Listener,
     {
-        self.local_addr = None;
-        self.listener = Some(Box::new(ErasedListener { inner: listener }));
+        self.configure_listener(Box::new(ErasedListener { inner: listener }), None);
         Ok(self)
     }
 
@@ -230,12 +247,11 @@ where
         let Self {
             connection_maker,
             listener,
-            local_addr,
-            _phantom,
         } = self;
 
         let listener =
             listener.ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
+        let (listener, local_addr) = listener.into_parts();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task =
             tokio::spawn(
@@ -252,6 +268,18 @@ where
     /// Starts the server and begins accepting connections.
     pub async fn run(self) -> Result<()> {
         self.spawn().await?.join().await
+    }
+
+    /// Stores a configured listener and any address metadata it exposes.
+    fn configure_listener(
+        &mut self,
+        listener: Box<dyn Listener<Stream = BoxedStream>>,
+        local_addr: Option<SocketAddr>,
+    ) {
+        self.listener = Some(ConfiguredListener {
+            listener,
+            local_addr,
+        });
     }
 }
 
