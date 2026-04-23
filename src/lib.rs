@@ -16,7 +16,8 @@
 //!
 //! To implement a client:
 //! 1. Implement the `Connection` trait
-//! 2. Create a `Client` via `Client::connect_tcp(addr)` or `Client::connect_unix(path)`
+//! 2. Create a `Client` via `Client::connect_tcp(addr, service)` or
+//!    `Client::connect_unix(path, service)`
 //! 3. Use `client.send_request()` or `client.send_notification()`
 
 mod connection;

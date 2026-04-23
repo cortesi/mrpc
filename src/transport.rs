@@ -143,8 +143,10 @@ impl Drop for UnixListener {
     }
 }
 
-/// RPC server that can listen on TCP or Unix domain sockets. The service type must implement the
-/// `RpcService` trait and `Default`. A new service instance is created for each connection.
+/// RPC server that can listen on TCP or Unix domain sockets.
+///
+/// The connection type must implement [`Connection`]. A new connection instance is created for
+/// each accepted stream.
 pub struct Server<T>
 where
     T: Connection,
@@ -367,28 +369,31 @@ where
 
 /// RPC client for connecting to a server over TCP or Unix domain sockets.
 #[derive(Debug)]
-pub struct Client<T: Connection> {
+pub struct Client {
     /// Sender for sending RPC requests and notifications.
     pub sender: RpcSender,
     /// Handle to the background connection handler task.
     handle: Option<JoinHandle<()>>,
     /// Used to request shutdown of the background connection handler.
     shutdown_tx: watch::Sender<bool>,
-    /// Phantom data for the connection type.
-    _phantom: PhantomData<T>,
 }
 
-impl<T: Connection> Client<T> {
+impl Client {
     /// Creates a new client from any bidirectional stream.
-    pub async fn from_stream<S>(stream: S, service: T) -> Result<Self>
+    pub async fn from_stream<S, T>(stream: S, service: T) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T: Connection,
     {
         Self::new(RpcConnection::new(stream), service).await
     }
 
     /// Creates a new client connected to a Unix domain socket.
-    pub async fn connect_unix<P: AsRef<Path>>(path: P, service: T) -> Result<Self> {
+    pub async fn connect_unix<P, T>(path: P, service: T) -> Result<Self>
+    where
+        P: AsRef<Path>,
+        T: Connection,
+    {
         let path_str = path.as_ref().to_string_lossy().to_string();
         let stream = UnixStream::connect(path)
             .await
@@ -398,7 +403,10 @@ impl<T: Connection> Client<T> {
     }
 
     /// Creates a new client connected to a TCP address.
-    pub async fn connect_tcp(addr: &str, service: T) -> Result<Self> {
+    pub async fn connect_tcp<T>(addr: &str, service: T) -> Result<Self>
+    where
+        T: Connection,
+    {
         let stream = TcpStream::connect(addr)
             .await
             .map_err(|source| RpcError::Connect { source })?;
@@ -407,9 +415,10 @@ impl<T: Connection> Client<T> {
     }
 
     /// Creates a new client from an existing RPC connection.
-    async fn new<S>(connection: RpcConnection<S>, service: T) -> Result<Self>
+    async fn new<S, T>(connection: RpcConnection<S>, service: T) -> Result<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T: Connection,
     {
         let shutdown_tx = connection.shutdown_sender();
         let (sender, receiver) = mpsc::channel(100);
@@ -432,7 +441,6 @@ impl<T: Connection> Client<T> {
             sender: rpc_sender,
             handle: Some(handler_task),
             shutdown_tx,
-            _phantom: PhantomData,
         })
     }
 
@@ -471,7 +479,7 @@ impl<T: Connection> Client<T> {
         let handle = self
             .handle
             .take()
-            .expect("Client join called with no handler task");
+            .ok_or_else(|| RpcError::Protocol("client handler already taken".into()))?;
         handle
             .await
             .map_err(|e| RpcError::Protocol(e.to_string().into()))?;
@@ -490,7 +498,7 @@ impl<T: Connection> Client<T> {
     }
 }
 
-impl<T: Connection> Drop for Client<T> {
+impl Drop for Client {
     fn drop(&mut self) {
         let _send_result = self.shutdown_tx.send(true);
         if let Some(handle) = &self.handle {

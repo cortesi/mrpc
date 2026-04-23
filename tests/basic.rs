@@ -113,7 +113,7 @@ impl Connection for TestClientConnect {
     }
 }
 
-async fn setup_server_and_client<T: Connection + Default>() -> Result<(Client<T>, ServerHandle)> {
+async fn setup_server_and_client<T: Connection + Default>() -> Result<(Client, ServerHandle)> {
     let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
     let server_handle = server.spawn().await?;
     let addr = server_handle.local_addr()?;
@@ -123,11 +123,8 @@ async fn setup_server_and_client<T: Connection + Default>() -> Result<(Client<T>
     Ok((client, server_handle))
 }
 
-async fn setup_server_and_client_with_connect() -> Result<(
-    Client<TestClientConnect>,
-    ServerHandle,
-    oneshot::Receiver<()>,
-)> {
+async fn setup_server_and_client_with_connect()
+-> Result<(Client, ServerHandle, oneshot::Receiver<()>)> {
     let (test_client, connected_rx) = TestClientConnect::new();
     let server = Server::from_fn(|| TestServer).tcp("127.0.0.1:0").await?;
     let server_handle = server.spawn().await?;

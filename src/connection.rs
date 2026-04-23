@@ -7,7 +7,6 @@ use std::{
     collections::HashMap,
     future::Future,
     io::{Cursor, ErrorKind},
-    marker::PhantomData,
     pin::Pin,
     result,
     sync::{
@@ -318,7 +317,7 @@ where
         let mut connected_done = false;
         let mut receiver = {
             let mut conn = self.connection.lock().await;
-            conn.receiver()
+            conn.take_receiver()?
         };
 
         // Clone Arc<Mutex<RpcConnection>> for the client message handling task
@@ -502,32 +501,19 @@ where
 }
 
 /// A [`ConnectionMaker`] implementation using a closure.
-pub struct ConnectionMakerFn<F, T>
-where
-    F: FnMut() -> T + Send + Sync,
-    T: Connection,
-{
+pub struct ConnectionMakerFn<F> {
     /// The closure that creates connections.
     make_fn: F,
-    /// Phantom data for the connection type.
-    _phantom: PhantomData<T>,
 }
 
-impl<F, T> ConnectionMakerFn<F, T>
-where
-    F: Fn() -> T + Send + Sync,
-    T: Connection,
-{
+impl<F> ConnectionMakerFn<F> {
     /// Creates a new `ConnectionMakerFn` from a closure.
     pub fn new(make_fn: F) -> Self {
-        Self {
-            make_fn,
-            _phantom: PhantomData,
-        }
+        Self { make_fn }
     }
 }
 
-impl<F, T> ConnectionMaker<T> for ConnectionMakerFn<F, T>
+impl<F, T> ConnectionMaker<T> for ConnectionMakerFn<F>
 where
     F: Fn() -> T + Send + Sync,
     T: Connection,
@@ -541,7 +527,7 @@ where
 /// Connection is created for each incoming connection. For clients, a single instance is used for
 /// the lifetime of the connection.
 ///
-/// As a convencience for clients that don't need to handle requests or responses, the `Connection`
+/// As a convenience for clients that don't need to handle requests or responses, the `Connection`
 /// trait is implemented for `()`, and the `Client` type exposes `send_request` and
 /// `send_notification` directly.
 ///
@@ -549,7 +535,7 @@ where
 /// support async methods.
 #[async_trait]
 pub trait Connection: Send + Sync + 'static {
-    /// Called after a connection is intiated, either by a `Client` connecting outbound, or an
+    /// Called after a connection is initiated, either by a `Client` connecting outbound, or an
     /// incoming connection on a listening `Server`.
     async fn connected(&self, _client: RpcSender) -> Result<()> {
         Ok(())
@@ -689,10 +675,10 @@ where
     }
 
     /// Takes ownership of the message receiver channel.
-    pub fn receiver(&mut self) -> mpsc::Receiver<Result<Message>> {
+    pub(crate) fn take_receiver(&mut self) -> Result<mpsc::Receiver<Result<Message>>> {
         self.message_receiver
             .take()
-            .expect("Receiver already taken")
+            .ok_or_else(|| RpcError::Protocol("message receiver already taken".into()))
     }
 
     /// Handles an incoming response message, routing it to the appropriate pending request.
