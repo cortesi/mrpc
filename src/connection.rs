@@ -400,29 +400,12 @@ where
     let service = service.as_ref();
     match message {
         Message::Request(request) => {
-            let result = service
-                .handle_request(rpc_sender.clone(), &request.method, request.params)
-                .await;
-            let response = match result {
-                Ok(value) => Response {
-                    id: request.id,
-                    result: Ok(value),
-                },
-                Err(RpcError::Service(service_error)) => {
-                    warn!("Service error: {}", service_error);
-                    Response {
-                        id: request.id,
-                        result: Err(service_error.into()),
-                    }
-                }
-                Err(e) => {
-                    warn!("RPC error: {}", e);
-                    Response {
-                        id: request.id,
-                        result: Err(Value::String(format!("Internal error: {}", e).into())),
-                    }
-                }
-            };
+            let response = response_from_request_result(
+                request.id,
+                service
+                    .handle_request(rpc_sender.clone(), &request.method, request.params)
+                    .await,
+            );
             let mut conn = connection.lock().await;
             conn.write_message(&Message::Response(response)).await?;
         }
@@ -454,36 +437,50 @@ async fn handle_client_messages<S>(
 {
     while let Some(message) = client_receiver.recv().await {
         let mut conn = connection.lock().await;
-        if let Err(e) = handle_client_message(&mut conn, message).await {
+        let result = match message {
+            ClientMessage::Request {
+                id,
+                method,
+                params,
+                response_sender,
+            } => conn.send_request(id, method, params, response_sender).await,
+            ClientMessage::Notification { method, params } => {
+                conn.send_notification(method, params).await
+            }
+        };
+
+        if let Err(e) = result {
             error!("Error handling client message: {}", e);
         }
     }
 }
 
-/// Handles a single outgoing client message.
-async fn handle_client_message<S>(
-    connection: &mut RpcConnection<S>,
-    message: ClientMessage,
-) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    match message {
-        ClientMessage::Request {
+/// Builds the wire response for a completed service request.
+fn response_from_request_result(id: u32, result: Result<Value>) -> Response {
+    match result {
+        Ok(value) => Response {
             id,
-            method,
-            params,
-            response_sender,
-        } => {
-            connection
-                .send_request(id, method, params, response_sender)
-                .await?;
+            result: Ok(value),
+        },
+        Err(error) => Response {
+            id,
+            result: Err(response_error_value(error)),
+        },
+    }
+}
+
+/// Converts a service-side request error into the wire error payload.
+fn response_error_value(error: RpcError) -> Value {
+    match error {
+        RpcError::Service(service_error) => {
+            warn!("Service error: {}", service_error);
+            service_error.into()
         }
-        ClientMessage::Notification { method, params } => {
-            connection.send_notification(method, params).await?;
+        other => {
+            warn!("RPC error: {}", other);
+            Value::String(format!("Internal error: {}", other).into())
         }
     }
-    Ok(())
 }
 
 /// A trait for creating connections.
@@ -755,5 +752,47 @@ fn try_decode_message(buffer: &[u8]) -> Result<Option<(Message, usize)>> {
             Err(RpcError::Protocol(ProtocolError::DepthLimitExceeded))
         }
         Err(e) => Err(RpcError::Deserialization(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_response_from_request_result_preserves_service_errors() {
+        let response = response_from_request_result(
+            7,
+            Err(RpcError::Service(ServiceError::method_not_found("missing"))),
+        );
+
+        assert_eq!(response.id, 7);
+        assert_eq!(
+            response.result,
+            Err(Value::Map(vec![
+                (
+                    Value::String("name".into()),
+                    Value::String("MethodNotFound".into())
+                ),
+                (
+                    Value::String("value".into()),
+                    Value::String("Method 'missing' not found".into()),
+                ),
+            ])),
+        );
+    }
+
+    #[test]
+    fn test_response_from_request_result_wraps_internal_errors() {
+        let response =
+            response_from_request_result(11, Err(RpcError::Protocol("bad request".into())));
+
+        assert_eq!(response.id, 11);
+        assert_eq!(
+            response.result,
+            Err(Value::String(
+                "Internal error: Malformed message: bad request".into(),
+            )),
+        );
     }
 }
