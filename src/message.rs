@@ -3,6 +3,7 @@
 //! Includes structures for requests, responses, and notifications, as well as
 //! utilities for encoding and decoding these messages.
 use std::{
+    convert::TryFrom,
     io::{Read, Write},
     result,
 };
@@ -72,18 +73,18 @@ impl Message {
                 Value::String(req.method.clone().into()),
                 Value::Array(req.params.clone()),
             ]),
-            Self::Response(resp) => Value::Array(vec![
-                Value::Integer(RESPONSE_MESSAGE.into()),
-                Value::Integer(resp.id.into()),
-                match &resp.result {
-                    Ok(_value) => Value::Nil,
-                    Err(err) => err.clone(),
-                },
-                match &resp.result {
-                    Ok(value) => value.clone(),
-                    Err(_) => Value::Nil,
-                },
-            ]),
+            Self::Response(resp) => {
+                let (error, result) = match &resp.result {
+                    Ok(value) => (Value::Nil, value.clone()),
+                    Err(error) => (error.clone(), Value::Nil),
+                };
+                Value::Array(vec![
+                    Value::Integer(RESPONSE_MESSAGE.into()),
+                    Value::Integer(resp.id.into()),
+                    error,
+                    result,
+                ])
+            }
             Self::Notification(notif) => Value::Array(vec![
                 Value::Integer(NOTIFICATION_MESSAGE.into()),
                 Value::String(notif.method.clone().into()),
@@ -94,83 +95,20 @@ impl Message {
 
     /// Creates a Message from a MessagePack-RPC compatible Value.
     pub fn from_value(value: Value) -> Result<Self> {
-        match value {
-            Value::Array(array) => {
-                if array.is_empty() {
-                    return Err(RpcError::Protocol("Empty message array".into()));
-                }
-                match array[0] {
-                    Value::Integer(msg_type) => match msg_type.as_u64() {
-                        Some(REQUEST_MESSAGE) => {
-                            if array.len() != 4 {
-                                return Err(RpcError::Protocol(
-                                    "Invalid request message length".into(),
-                                ));
-                            }
-                            let id = array[1]
-                                .as_u64()
-                                .ok_or(RpcError::Protocol("Invalid request id".into()))?
-                                as u32;
-                            let method = array[2]
-                                .as_str()
-                                .ok_or(RpcError::Protocol("Invalid request method".into()))?
-                                .to_string();
-                            let params = match &array[3] {
-                                Value::Array(params) => params.clone(),
-                                _ => {
-                                    return Err(RpcError::Protocol(
-                                        "Invalid request params".into(),
-                                    ));
-                                }
-                            };
-                            Ok(Self::Request(Request { id, method, params }))
-                        }
-                        Some(RESPONSE_MESSAGE) => {
-                            if array.len() != 4 {
-                                return Err(RpcError::Protocol(
-                                    "Invalid response message length".into(),
-                                ));
-                            }
-                            let id = array[1]
-                                .as_u64()
-                                .ok_or(RpcError::Protocol("Invalid response id".into()))?
-                                as u32;
-                            let result = if array[2] == Value::Nil {
-                                Ok(array[3].clone())
-                            } else {
-                                Err(array[2].clone())
-                            };
-                            Ok(Self::Response(Response { id, result }))
-                        }
-                        Some(NOTIFICATION_MESSAGE) => {
-                            if array.len() != 3 {
-                                return Err(RpcError::Protocol(
-                                    "Invalid notification message length".into(),
-                                ));
-                            }
-                            let method = array[1]
-                                .as_str()
-                                .ok_or(RpcError::Protocol("Invalid notification method".into()))?
-                                .to_string();
-                            let params = match &array[2] {
-                                Value::Array(params) => params.clone(),
-                                _ => {
-                                    return Err(RpcError::Protocol(
-                                        "Invalid notification params".into(),
-                                    ));
-                                }
-                            };
-                            Ok(Self::Notification(Notification { method, params }))
-                        }
-                        Some(other) => {
-                            Err(RpcError::Protocol(ProtocolError::InvalidMessageType(other)))
-                        }
-                        None => Err(RpcError::Protocol("Invalid message type".into())),
-                    },
-                    _ => Err(RpcError::Protocol("Invalid message type".into())),
-                }
-            }
-            _ => Err(RpcError::Protocol("Invalid message format".into())),
+        let array = match value {
+            Value::Array(array) => array,
+            _ => return Err(RpcError::Protocol("Invalid message format".into())),
+        };
+
+        let Some((message_type, fields)) = array.split_first() else {
+            return Err(RpcError::Protocol("Empty message array".into()));
+        };
+
+        match parse_message_type(message_type)? {
+            REQUEST_MESSAGE => parse_request(fields),
+            RESPONSE_MESSAGE => parse_response(fields),
+            NOTIFICATION_MESSAGE => parse_notification(fields),
+            other => Err(RpcError::Protocol(ProtocolError::InvalidMessageType(other))),
         }
     }
 
@@ -193,6 +131,85 @@ impl Message {
             }
         }
     }
+}
+
+/// Parses the leading message type tag from a MessagePack-RPC array.
+fn parse_message_type(value: &Value) -> Result<u64> {
+    value
+        .as_u64()
+        .ok_or_else(|| RpcError::Protocol("Invalid message type".into()))
+}
+
+/// Parses a MessagePack-RPC request body.
+fn parse_request(fields: &[Value]) -> Result<Message> {
+    let [id, method, params] = fields else {
+        return Err(RpcError::Protocol("Invalid request message length".into()));
+    };
+
+    Ok(Message::Request(Request {
+        id: parse_message_id(id, "request")?,
+        method: parse_method_name(method, "request")?,
+        params: parse_params(params, "request")?,
+    }))
+}
+
+/// Parses a MessagePack-RPC response body.
+fn parse_response(fields: &[Value]) -> Result<Message> {
+    let [id, error, result] = fields else {
+        return Err(RpcError::Protocol("Invalid response message length".into()));
+    };
+
+    let result = if matches!(error, Value::Nil) {
+        Ok(result.clone())
+    } else {
+        Err(error.clone())
+    };
+
+    Ok(Message::Response(Response {
+        id: parse_message_id(id, "response")?,
+        result,
+    }))
+}
+
+/// Parses a MessagePack-RPC notification body.
+fn parse_notification(fields: &[Value]) -> Result<Message> {
+    let [method, params] = fields else {
+        return Err(RpcError::Protocol(
+            "Invalid notification message length".into(),
+        ));
+    };
+
+    Ok(Message::Notification(Notification {
+        method: parse_method_name(method, "notification")?,
+        params: parse_params(params, "notification")?,
+    }))
+}
+
+/// Parses a method name field from a request or notification.
+fn parse_method_name(value: &Value, context: &str) -> Result<String> {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| RpcError::Protocol(format!("Invalid {context} method").into()))
+}
+
+/// Parses a parameter list field from a request or notification.
+fn parse_params(value: &Value, context: &str) -> Result<Vec<Value>> {
+    match value {
+        Value::Array(params) => Ok(params.clone()),
+        _ => Err(RpcError::Protocol(
+            format!("Invalid {context} params").into(),
+        )),
+    }
+}
+
+/// Parses a wire message id and rejects values that exceed the public `u32` range.
+fn parse_message_id(value: &Value, context: &str) -> Result<u32> {
+    let raw_id = value
+        .as_u64()
+        .ok_or_else(|| RpcError::Protocol(format!("Invalid {context} id").into()))?;
+
+    u32::try_from(raw_id).map_err(|_| RpcError::Protocol(format!("Invalid {context} id").into()))
 }
 
 #[cfg(test)]
@@ -282,5 +299,24 @@ mod tests {
             // Ensure the entire buffer was consumed
             assert_eq!(read_buffer.position() as usize, read_buffer.get_ref().len());
         }
+    }
+
+    #[test]
+    fn test_rejects_message_ids_outside_u32_range() {
+        let request = Value::Array(vec![
+            Value::Integer(REQUEST_MESSAGE.into()),
+            Value::Integer((u64::from(u32::MAX) + 1).into()),
+            Value::String("overflow".into()),
+            Value::Array(vec![]),
+        ]);
+        assert!(Message::from_value(request).is_err());
+
+        let response = Value::Array(vec![
+            Value::Integer(RESPONSE_MESSAGE.into()),
+            Value::Integer((u64::from(u32::MAX) + 1).into()),
+            Value::Nil,
+            Value::Nil,
+        ]);
+        assert!(Message::from_value(response).is_err());
     }
 }
