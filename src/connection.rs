@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{error, trace, warn};
 
 use crate::{
-    error::{ProtocolError, Result, RpcError},
+    error::{ProtocolError, Result, RpcError, ServiceError},
     message::*,
 };
 
@@ -543,7 +543,7 @@ pub trait Connection: Send + Sync + 'static {
 
     /// Handles an incoming RPC request.
     ///
-    /// By default, returns an error indicating the method is not implemented.
+    /// By default, returns a `MethodNotFound` service error.
     async fn handle_request(
         &self,
         _client: RpcSender,
@@ -551,9 +551,7 @@ pub trait Connection: Send + Sync + 'static {
         params: Vec<Value>,
     ) -> Result<Value> {
         tracing::warn!("Unhandled request: method={}, params={:?}", method, params);
-        Err(RpcError::Protocol(
-            format!("Method '{}' not implemented", method).into(),
-        ))
+        Err(RpcError::Service(ServiceError::method_not_found(method)))
     }
 
     /// Handles an incoming RPC notification.

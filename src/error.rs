@@ -162,6 +162,16 @@ pub struct ServiceError {
     pub value: Value,
 }
 
+impl ServiceError {
+    /// Creates a standard service error for an unknown RPC method.
+    pub fn method_not_found(method: &str) -> Self {
+        Self {
+            name: "MethodNotFound".to_string(),
+            value: Value::String(format!("Method '{}' not found", method).into()),
+        }
+    }
+}
+
 impl Display for ServiceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "Service error {}: {:?}", self.name, self.value)
@@ -292,6 +302,17 @@ mod tests {
             }
             other => panic!("expected resource-taken error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_method_not_found_helper_uses_standard_shape() {
+        let error = ServiceError::method_not_found("missing");
+
+        assert_eq!(error.name, "MethodNotFound");
+        assert_eq!(
+            error.value,
+            Value::String("Method 'missing' not found".into())
+        );
     }
 
     #[test]

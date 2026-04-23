@@ -58,10 +58,7 @@ impl Connection for TestServer {
                     Err(RpcError::Protocol("Expected two parameters".into()))
                 }
             }
-            _ => Err(RpcError::Service(ServiceError {
-                name: "MethodNotFound".into(),
-                value: Value::String(format!("Method '{}' not found", method).into()),
-            })),
+            _ => Err(RpcError::Service(ServiceError::method_not_found(method))),
         }
     }
 }
@@ -181,6 +178,29 @@ async fn test_method_not_found() -> Result<()> {
             );
         }
         _ => panic!("Expected Service error, got {:?}", result),
+    }
+
+    server_handle.shutdown();
+    server_handle.join().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_default_connection_returns_method_not_found() -> Result<()> {
+    let server = Server::from_fn(|| ()).tcp("127.0.0.1:0").await?;
+    let server_handle = server.spawn().await?;
+    let addr = server_handle.local_addr()?;
+
+    let client = Client::connect_tcp(&addr.to_string(), ()).await?;
+    let result = client.send_request("missing", &[Value::from(1)]).await;
+
+    match result {
+        Err(RpcError::Service(ServiceError { name, value })) => {
+            assert_eq!(name, "MethodNotFound");
+            assert_eq!(value, Value::String("Method 'missing' not found".into()));
+        }
+        other => panic!("Expected MethodNotFound service error, got {other:?}"),
     }
 
     server_handle.shutdown();
