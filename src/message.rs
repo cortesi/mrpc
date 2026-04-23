@@ -97,11 +97,11 @@ impl Message {
     pub fn from_value(value: Value) -> Result<Self> {
         let array = match value {
             Value::Array(array) => array,
-            _ => return Err(RpcError::Protocol("Invalid message format".into())),
+            _ => return Err(RpcError::Protocol(ProtocolError::InvalidMessageFormat)),
         };
 
         let Some((message_type, fields)) = array.split_first() else {
-            return Err(RpcError::Protocol("Empty message array".into()));
+            return Err(RpcError::Protocol(ProtocolError::EmptyMessageArray));
         };
 
         match parse_message_type(message_type)? {
@@ -135,15 +135,20 @@ impl Message {
 
 /// Parses the leading message type tag from a MessagePack-RPC array.
 fn parse_message_type(value: &Value) -> Result<u64> {
-    value
-        .as_u64()
-        .ok_or_else(|| RpcError::Protocol("Invalid message type".into()))
+    value.as_u64().ok_or_else(|| {
+        RpcError::Protocol(ProtocolError::InvalidMessageField {
+            kind: "message",
+            field: "type",
+        })
+    })
 }
 
 /// Parses a MessagePack-RPC request body.
 fn parse_request(fields: &[Value]) -> Result<Message> {
     let [id, method, params] = fields else {
-        return Err(RpcError::Protocol("Invalid request message length".into()));
+        return Err(RpcError::Protocol(ProtocolError::InvalidMessageLength {
+            kind: "request",
+        }));
     };
 
     Ok(Message::Request(Request {
@@ -156,7 +161,9 @@ fn parse_request(fields: &[Value]) -> Result<Message> {
 /// Parses a MessagePack-RPC response body.
 fn parse_response(fields: &[Value]) -> Result<Message> {
     let [id, error, result] = fields else {
-        return Err(RpcError::Protocol("Invalid response message length".into()));
+        return Err(RpcError::Protocol(ProtocolError::InvalidMessageLength {
+            kind: "response",
+        }));
     };
 
     let result = if matches!(error, Value::Nil) {
@@ -174,9 +181,9 @@ fn parse_response(fields: &[Value]) -> Result<Message> {
 /// Parses a MessagePack-RPC notification body.
 fn parse_notification(fields: &[Value]) -> Result<Message> {
     let [method, params] = fields else {
-        return Err(RpcError::Protocol(
-            "Invalid notification message length".into(),
-        ));
+        return Err(RpcError::Protocol(ProtocolError::InvalidMessageLength {
+            kind: "notification",
+        }));
     };
 
     Ok(Message::Notification(Notification {
@@ -186,30 +193,41 @@ fn parse_notification(fields: &[Value]) -> Result<Message> {
 }
 
 /// Parses a method name field from a request or notification.
-fn parse_method_name(value: &Value, context: &str) -> Result<String> {
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| RpcError::Protocol(format!("Invalid {context} method").into()))
+fn parse_method_name(value: &Value, context: &'static str) -> Result<String> {
+    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+        RpcError::Protocol(ProtocolError::InvalidMessageField {
+            kind: context,
+            field: "method",
+        })
+    })
 }
 
 /// Parses a parameter list field from a request or notification.
-fn parse_params(value: &Value, context: &str) -> Result<Vec<Value>> {
+fn parse_params(value: &Value, context: &'static str) -> Result<Vec<Value>> {
     match value {
         Value::Array(params) => Ok(params.clone()),
-        _ => Err(RpcError::Protocol(
-            format!("Invalid {context} params").into(),
-        )),
+        _ => Err(RpcError::Protocol(ProtocolError::InvalidMessageField {
+            kind: context,
+            field: "params",
+        })),
     }
 }
 
 /// Parses a wire message id and rejects values that exceed the public `u32` range.
-fn parse_message_id(value: &Value, context: &str) -> Result<u32> {
-    let raw_id = value
-        .as_u64()
-        .ok_or_else(|| RpcError::Protocol(format!("Invalid {context} id").into()))?;
+fn parse_message_id(value: &Value, context: &'static str) -> Result<u32> {
+    let raw_id = value.as_u64().ok_or_else(|| {
+        RpcError::Protocol(ProtocolError::InvalidMessageField {
+            kind: context,
+            field: "id",
+        })
+    })?;
 
-    u32::try_from(raw_id).map_err(|_| RpcError::Protocol(format!("Invalid {context} id").into()))
+    u32::try_from(raw_id).map_err(|_| {
+        RpcError::Protocol(ProtocolError::InvalidMessageField {
+            kind: context,
+            field: "id",
+        })
+    })
 }
 
 #[cfg(test)]
@@ -318,5 +336,45 @@ mod tests {
             Value::Nil,
         ]);
         assert!(Message::from_value(response).is_err());
+    }
+
+    #[test]
+    fn test_message_decoder_uses_typed_protocol_errors() {
+        let invalid_format = Message::from_value(Value::Nil).unwrap_err();
+        match invalid_format {
+            RpcError::Protocol(ProtocolError::InvalidMessageFormat) => {}
+            other => panic!("expected invalid format error, got {other:?}"),
+        }
+
+        let empty_array = Message::from_value(Value::Array(vec![])).unwrap_err();
+        match empty_array {
+            RpcError::Protocol(ProtocolError::EmptyMessageArray) => {}
+            other => panic!("expected empty-array error, got {other:?}"),
+        }
+
+        let short_request =
+            Message::from_value(Value::Array(vec![Value::Integer(REQUEST_MESSAGE.into())]))
+                .unwrap_err();
+        match short_request {
+            RpcError::Protocol(ProtocolError::InvalidMessageLength { kind }) => {
+                assert_eq!(kind, "request");
+            }
+            other => panic!("expected invalid request length, got {other:?}"),
+        }
+
+        let invalid_request_method = Message::from_value(Value::Array(vec![
+            Value::Integer(REQUEST_MESSAGE.into()),
+            Value::Integer(1.into()),
+            Value::Integer(2.into()),
+            Value::Array(vec![]),
+        ]))
+        .unwrap_err();
+        match invalid_request_method {
+            RpcError::Protocol(ProtocolError::InvalidMessageField { kind, field }) => {
+                assert_eq!(kind, "request");
+                assert_eq!(field, "method");
+            }
+            other => panic!("expected invalid request method, got {other:?}"),
+        }
     }
 }

@@ -13,9 +13,33 @@ use tokio::task::JoinError;
 /// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
+    /// Received a value that was not a top-level MessagePack-RPC message array.
+    #[error("Invalid message format")]
+    InvalidMessageFormat,
+
+    /// Received an empty top-level MessagePack-RPC message array.
+    #[error("Empty message array")]
+    EmptyMessageArray,
+
     /// Received a message with an invalid type tag.
     #[error("Invalid message type: {0}")]
     InvalidMessageType(u64),
+
+    /// Received a message body with an unexpected number of fields.
+    #[error("Invalid {kind} message length")]
+    InvalidMessageLength {
+        /// The message kind whose field count was invalid.
+        kind: &'static str,
+    },
+
+    /// Received a message field that did not have the expected shape or type.
+    #[error("Invalid {kind} {field}")]
+    InvalidMessageField {
+        /// The message kind or decode context.
+        kind: &'static str,
+        /// The field whose value was invalid.
+        field: &'static str,
+    },
 
     /// A full MessagePack value exceeded the configured nesting limit.
     #[error("Depth limit exceeded")]
