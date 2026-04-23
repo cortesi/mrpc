@@ -267,3 +267,29 @@ async fn test_client_request_from_connected() -> Result<()> {
         Err(_) => Err(RpcError::Protocol("Test timed out".into())),
     }
 }
+
+#[tokio::test]
+async fn test_start_request_exposes_monotonic_ids() -> Result<()> {
+    let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
+
+    let first = client
+        .sender
+        .start_request("add", &[Value::from(1), Value::from(2)])
+        .await?;
+    let second = client
+        .sender
+        .start_request("add", &[Value::from(3), Value::from(4)])
+        .await?;
+
+    let first_id = first.id();
+    let second_id = second.id();
+    assert!(first_id > 0, "msgid must be non-zero");
+    assert_eq!(second_id, first_id + 1, "msgid must be monotonic");
+
+    assert_eq!(first.response().await?, Value::from(3));
+    assert_eq!(second.response().await?, Value::from(7));
+
+    server_handle.shutdown();
+    server_handle.join().await?;
+    Ok(())
+}

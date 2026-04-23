@@ -10,7 +10,10 @@ use std::{
     marker::PhantomData,
     pin::Pin,
     result,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -38,6 +41,8 @@ use crate::{
 pub enum ClientMessage {
     /// An RPC request with a response channel.
     Request {
+        /// Msgpack-RPC `msgid` assigned by [`RpcSender`] before enqueue.
+        id: u32,
         /// Method name.
         method: String,
         /// Method parameters.
@@ -59,23 +64,48 @@ pub enum ClientMessage {
 pub struct RpcSender {
     /// Channel sender for client messages.
     pub(crate) sender: mpsc::Sender<ClientMessage>,
+    /// Shared counter producing the msgpack-RPC `msgid` for each outbound
+    /// request. Lives behind [`Arc`] so every clone of an [`RpcSender`]
+    /// draws from the same id space.
+    next_id: Arc<AtomicU32>,
 }
 
 impl RpcSender {
-    /// Sends an RPC request and waits for the response.
-    pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
+    /// Constructs a sender over `channel`. Ids are minted from 1 upward.
+    pub(crate) fn new(channel: mpsc::Sender<ClientMessage>) -> Self {
+        Self {
+            sender: channel,
+            next_id: Arc::new(AtomicU32::new(1)),
+        }
+    }
+
+    /// Queues an RPC request and returns a [`RequestHandle`] that carries
+    /// the assigned `msgid` and yields the response when awaited. The
+    /// method returns as soon as the request is accepted by the channel,
+    /// so callers see the id before the response arrives.
+    pub async fn start_request(&self, method: &str, params: &[Value]) -> Result<RequestHandle> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender
             .send(ClientMessage::Request {
+                id,
                 method: method.to_string(),
                 params: params.to_vec(),
                 response_sender,
             })
             .await
             .map_err(|_| RpcError::Disconnect { source: None })?;
-        response_receiver
-            .await
-            .map_err(|_| RpcError::Disconnect { source: None })?
+        Ok(RequestHandle {
+            id,
+            response: response_receiver,
+        })
+    }
+
+    /// Sends an RPC request and waits for the response. Equivalent to
+    /// [`start_request`](Self::start_request) followed by awaiting the
+    /// returned handle; the id is not exposed.
+    pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
+        self.start_request(method, params).await?.response().await
     }
 
     /// Sends an RPC notification without waiting for a response.
@@ -109,6 +139,35 @@ impl RpcSender {
     {
         let params = serialize_params(req)?;
         self.send_notification(method, &params).await
+    }
+}
+
+/// Handle to an in-flight RPC request.
+///
+/// Exposes the msgpack-RPC [`msgid`](Self::id) assigned to the request as
+/// soon as it is queued, so callers can reference it in out-of-band
+/// protocol messages (such as application-level cancellation) before the
+/// response arrives. The response is retrieved via
+/// [`response`](Self::response).
+#[derive(Debug)]
+pub struct RequestHandle {
+    /// Msgpack-RPC `msgid` of the request.
+    id: u32,
+    /// Oneshot receiver for the eventual response or error.
+    response: oneshot::Receiver<Result<Value>>,
+}
+
+impl RequestHandle {
+    /// Returns the msgpack-RPC `msgid` of the request.
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Awaits the response. Consumes the handle.
+    pub async fn response(self) -> Result<Value> {
+        self.response
+            .await
+            .map_err(|_| RpcError::Disconnect { source: None })?
     }
 }
 
@@ -234,18 +293,15 @@ impl<S, T: Connection> ConnectionHandler<S, T>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    /// Creates a new connection handler.
-    pub(crate) fn new(
-        connection: RpcConnection<S>,
-        service: T,
-        client_sender: mpsc::Sender<ClientMessage>,
-    ) -> Self {
+    /// Creates a new connection handler. The supplied [`RpcSender`] is
+    /// passed to the service's `connected` callback; callers that also
+    /// hand out their own sender (for example, [`Client`]) must pass a
+    /// clone so both share one `msgid` counter.
+    pub(crate) fn new(connection: RpcConnection<S>, service: T, rpc_sender: RpcSender) -> Self {
         Self {
             connection: Arc::new(Mutex::new(connection)),
             service: Arc::new(service),
-            rpc_sender: RpcSender {
-                sender: client_sender,
-            },
+            rpc_sender,
         }
     }
 
@@ -415,12 +471,13 @@ where
 {
     match message {
         ClientMessage::Request {
+            id,
             method,
             params,
             response_sender,
         } => {
             connection
-                .send_request(method, params, response_sender)
+                .send_request(id, method, params, response_sender)
                 .await?;
         }
         ClientMessage::Notification { method, params } => {
@@ -543,8 +600,6 @@ where
     message_receiver: Option<mpsc::Receiver<Result<Message>>>,
     /// Write half of the stream.
     write_half: WriteHalf<S>,
-    /// Next request ID to use.
-    next_request_id: u32,
     /// Pending requests awaiting responses.
     pending_requests: HashMap<u32, oneshot::Sender<Result<Value>>>,
     /// Used to request shutdown of the background reader task.
@@ -621,7 +676,6 @@ where
 
         Self {
             write_half,
-            next_request_id: 1,
             pending_requests: HashMap::new(),
             message_receiver: Some(message_receiver),
             shutdown_tx,
@@ -680,15 +734,16 @@ where
         Ok(())
     }
 
-    /// Sends an RPC request and registers the response channel.
+    /// Sends an RPC request with the supplied `msgid` and registers the
+    /// response channel. The id is minted by [`RpcSender`] before the
+    /// message reaches this layer.
     pub async fn send_request(
         &mut self,
+        id: u32,
         method: String,
         params: Vec<Value>,
         response_sender: oneshot::Sender<Result<Value>>,
     ) -> Result<()> {
-        let id = self.next_request_id;
-        self.next_request_id += 1;
         self.pending_requests.insert(id, response_sender);
         let request = Request { id, method, params };
         self.write_message(&Message::Request(request)).await

@@ -350,7 +350,8 @@ where
     T: Connection,
 {
     let (sender, receiver) = mpsc::channel(100);
-    let handler = ConnectionHandler::new(rpc_conn, connection, sender.clone());
+    let rpc_sender = RpcSender::new(sender);
+    let handler = ConnectionHandler::new(rpc_conn, connection, rpc_sender);
     match handler.run(receiver).await {
         Ok(()) => {
             trace!("Connection handler finished successfully");
@@ -412,10 +413,8 @@ impl<T: Connection> Client<T> {
     {
         let shutdown_tx = connection.shutdown_sender();
         let (sender, receiver) = mpsc::channel(100);
-        let rpc_sender = RpcSender {
-            sender: sender.clone(),
-        };
-        let handler = ConnectionHandler::new(connection, service, sender);
+        let rpc_sender = RpcSender::new(sender);
+        let handler = ConnectionHandler::new(connection, service, rpc_sender.clone());
         let handler_task = tokio::spawn(async move {
             if let Err(e) = handler.run(receiver).await {
                 match e {
