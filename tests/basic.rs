@@ -304,11 +304,9 @@ async fn test_start_request_exposes_monotonic_ids() -> Result<()> {
     let (client, server_handle) = setup_server_and_client::<TestClient>().await?;
 
     let first = client
-        .sender
         .start_request("add", &[Value::from(1), Value::from(2)])
         .await?;
     let second = client
-        .sender
         .start_request("add", &[Value::from(3), Value::from(4)])
         .await?;
 

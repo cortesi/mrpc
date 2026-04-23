@@ -26,7 +26,7 @@ mod error;
 mod message;
 mod transport;
 
-pub use connection::{Connection, ConnectionMaker, ConnectionMakerFn, RequestHandle, RpcSender};
+pub use connection::{Connection, ConnectionMaker, RequestHandle, RpcSender};
 #[cfg(feature = "serde")]
 pub use connection::{
     deserialize_param, deserialize_params, deserialize_response, serialize_params, serialize_value,

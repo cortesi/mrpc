@@ -497,7 +497,7 @@ where
     fn make_connection(&self) -> T;
 }
 
-/// A [`ConnectionMaker`] implementation using a closure.
+/// A [`ConnectionMaker`] implementation used by [`Server::from_fn`](crate::Server::from_fn).
 pub struct ConnectionMakerFn<F> {
     /// The closure that creates connections.
     make_fn: F,
@@ -517,6 +517,15 @@ where
 {
     fn make_connection(&self) -> T {
         (self.make_fn)()
+    }
+}
+
+impl<T> ConnectionMaker<T> for T
+where
+    T: Connection + Default,
+{
+    fn make_connection(&self) -> T {
+        Self::default()
     }
 }
 

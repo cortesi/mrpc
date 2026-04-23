@@ -26,8 +26,8 @@ use tokio::{
 use tracing::{trace, warn};
 
 use crate::{
-    Connection, ConnectionMaker, ConnectionMakerFn, RpcSender, Value,
-    connection::{ConnectionHandler, RpcConnection},
+    Connection, ConnectionMaker, RequestHandle, RpcSender, Value,
+    connection::{ConnectionHandler, ConnectionMakerFn, RpcConnection},
     error::*,
 };
 
@@ -292,7 +292,7 @@ where
     where
         L: Listener,
     {
-        Self::from_fn(T::default).with_listener(listener)
+        Self::from_maker(T::default()).with_listener(listener)
     }
 }
 
@@ -399,7 +399,7 @@ where
 #[derive(Debug)]
 pub struct Client {
     /// Sender for sending RPC requests and notifications.
-    pub sender: RpcSender,
+    sender: RpcSender,
     /// Handle to the background connection handler task.
     handle: Option<JoinHandle<()>>,
     /// Used to request shutdown of the background connection handler.
@@ -475,6 +475,11 @@ impl Client {
     /// Sends an RPC request to the server. Convenience method for `RpcSender::send_request`.
     pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
         self.sender.send_request(method, params).await
+    }
+
+    /// Queues an RPC request and returns a handle with the assigned msgid.
+    pub async fn start_request(&self, method: &str, params: &[Value]) -> Result<RequestHandle> {
+        self.sender.start_request(method, params).await
     }
 
     /// Sends an RPC notification to the server. Convenience method for
