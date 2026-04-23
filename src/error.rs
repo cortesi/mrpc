@@ -123,23 +123,51 @@ impl TryFrom<Value> for ServiceError {
     type Error = Value;
 
     fn try_from(value: Value) -> result::Result<Self, Self::Error> {
-        if let Value::Map(ref map) = value {
-            let name = map
-                .iter()
-                .find(|(k, _)| k == &Value::from("name"))
-                .and_then(|(_, v)| v.as_str())
-                .map(|s| s.to_string());
+        if let Value::Map(map) = &value {
+            let mut name = None;
+            let mut service_value = None;
 
-            let val = map
-                .iter()
-                .find(|(k, _)| k == &Value::from("value"))
-                .map(|(_, v)| v.clone());
+            for (key, entry) in map {
+                match key.as_str() {
+                    Some("name") => {
+                        name = entry.as_str().map(ToOwned::to_owned);
+                    }
+                    Some("value") => {
+                        service_value = Some(entry.clone());
+                    }
+                    _ => {}
+                }
+            }
 
-            if let (Some(name), Some(val)) = (name, val) {
-                return Ok(Self { name, value: val });
+            if let (Some(name), Some(service_value)) = (name, service_value) {
+                return Ok(Self {
+                    name,
+                    value: service_value,
+                });
             }
         }
         Err(value)
+    }
+}
+
+impl RpcError {
+    /// Builds a service-facing RPC error from a remote error payload.
+    ///
+    /// Properly encoded service errors preserve their original name and value.
+    /// Malformed remote errors are wrapped into fallback names so callers still
+    /// receive the remote payload through the service-error path.
+    pub(crate) fn from_remote_error_value(value: Value) -> Self {
+        match ServiceError::try_from(value) {
+            Ok(service_error) => Self::Service(service_error),
+            Err(Value::Map(map)) => Self::Service(ServiceError {
+                name: "UnknownError".to_string(),
+                value: Value::Map(map),
+            }),
+            Err(original_value) => Self::Service(ServiceError {
+                name: "RemoteError".to_string(),
+                value: original_value,
+            }),
+        }
     }
 }
 
@@ -160,3 +188,75 @@ impl From<io::Error> for RpcError {
 
 /// A type alias for `Result` with [`RpcError`] as the error type.
 pub type Result<T> = result::Result<T, RpcError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_service_error_round_trip() {
+        let error = ServiceError {
+            name: "MethodNotFound".to_string(),
+            value: Value::from("missing"),
+        };
+
+        let encoded = Value::from(error);
+        let decoded = ServiceError::try_from(encoded).unwrap();
+
+        assert_eq!(decoded.name, "MethodNotFound");
+        assert_eq!(decoded.value, Value::from("missing"));
+    }
+
+    #[test]
+    fn test_service_error_try_from_requires_name_and_value() {
+        let missing_name = Value::Map(vec![(Value::from("value"), Value::from("missing"))]);
+        assert!(ServiceError::try_from(missing_name).is_err());
+
+        let missing_value = Value::Map(vec![(Value::from("name"), Value::from("SomeError"))]);
+        assert!(ServiceError::try_from(missing_value).is_err());
+    }
+
+    #[test]
+    fn test_from_remote_error_value_preserves_service_errors() {
+        let value = Value::Map(vec![
+            (Value::from("name"), Value::from("SomeError")),
+            (Value::from("value"), Value::from("payload")),
+        ]);
+
+        let error = RpcError::from_remote_error_value(value);
+
+        match error {
+            RpcError::Service(service_error) => {
+                assert_eq!(service_error.name, "SomeError");
+                assert_eq!(service_error.value, Value::from("payload"));
+            }
+            other => panic!("expected service error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_remote_error_value_uses_fallback_names() {
+        let malformed_map = Value::Map(vec![(Value::from("value"), Value::from("payload"))]);
+        let error = RpcError::from_remote_error_value(malformed_map);
+
+        match error {
+            RpcError::Service(service_error) => {
+                assert_eq!(service_error.name, "UnknownError");
+                assert_eq!(
+                    service_error.value,
+                    Value::Map(vec![(Value::from("value"), Value::from("payload"),)])
+                );
+            }
+            other => panic!("expected service error, got {other:?}"),
+        }
+
+        let scalar_error = RpcError::from_remote_error_value(Value::from("boom"));
+        match scalar_error {
+            RpcError::Service(service_error) => {
+                assert_eq!(service_error.name, "RemoteError");
+                assert_eq!(service_error.value, Value::from("boom"));
+            }
+            other => panic!("expected service error, got {other:?}"),
+        }
+    }
+}

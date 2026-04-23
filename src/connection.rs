@@ -31,7 +31,7 @@ use tokio::{
 use tracing::{error, trace, warn};
 
 use crate::{
-    error::{ProtocolError, Result, RpcError, ServiceError},
+    error::{ProtocolError, Result, RpcError},
     message::*,
 };
 
@@ -685,23 +685,7 @@ where
     pub fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
             // Receiver may be dropped if caller gave up waiting; ignore send errors.
-            drop(
-                sender.send(
-                    response
-                        .result
-                        .map_err(|e| match ServiceError::try_from(e) {
-                            Ok(service_error) => RpcError::Service(service_error),
-                            Err(Value::Map(map)) => RpcError::Service(ServiceError {
-                                name: "UnknownError".to_string(),
-                                value: Value::Map(map),
-                            }),
-                            Err(original_value) => RpcError::Service(ServiceError {
-                                name: "RemoteError".to_string(),
-                                value: original_value,
-                            }),
-                        }),
-                ),
-            );
+            drop(sender.send(response.result.map_err(RpcError::from_remote_error_value)));
             Ok(())
         } else {
             Err(RpcError::Protocol(ProtocolError::UnexpectedResponse {
