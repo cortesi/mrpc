@@ -8,6 +8,7 @@ use std::{
 use rmp_serde::{decode::Error as RmpSerdeDecodeError, encode::Error as RmpSerdeEncodeError};
 use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeError};
 use thiserror::Error;
+use tokio::task::JoinError;
 
 /// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
 #[derive(Debug, Error)]
@@ -15,6 +16,39 @@ pub enum ProtocolError {
     /// Received a message with an invalid type tag.
     #[error("Invalid message type: {0}")]
     InvalidMessageType(u64),
+
+    /// A full MessagePack value exceeded the configured nesting limit.
+    #[error("Depth limit exceeded")]
+    DepthLimitExceeded,
+
+    /// A caller requested a bound socket address before any listener was configured.
+    #[error("No listener configured")]
+    ListenerNotConfigured,
+
+    /// A configured listener does not expose a bound `SocketAddr`.
+    #[error("Listener has no SocketAddr")]
+    MissingSocketAddr,
+
+    /// A MessagePack-RPC single-parameter helper received the wrong arity.
+    #[error("Expected exactly one parameter")]
+    ExpectedSingleParameter,
+
+    /// A single-consumer resource was taken more than once.
+    #[error("Resource already taken: {resource}")]
+    ResourceAlreadyTaken {
+        /// The resource that was already taken.
+        resource: &'static str,
+    },
+
+    /// A background task failed before completing normally.
+    #[error("Task '{task}' failed: {source}")]
+    TaskFailed {
+        /// The task that failed.
+        task: &'static str,
+        /// The underlying join failure.
+        #[source]
+        source: JoinError,
+    },
 
     /// Received a response for a request id that has no pending waiter.
     #[error("Unexpected response id: {id}")]
@@ -151,6 +185,16 @@ impl TryFrom<Value> for ServiceError {
 }
 
 impl RpcError {
+    /// Wraps a failed task join as a protocol error with task context.
+    pub(crate) fn task_failed(task: &'static str, source: JoinError) -> Self {
+        Self::Protocol(ProtocolError::TaskFailed { task, source })
+    }
+
+    /// Reports that a single-consumer resource was taken more than once.
+    pub(crate) fn resource_already_taken(resource: &'static str) -> Self {
+        Self::Protocol(ProtocolError::ResourceAlreadyTaken { resource })
+    }
+
     /// Builds a service-facing RPC error from a remote error payload.
     ///
     /// Properly encoded service errors preserve their original name and value.
@@ -191,7 +235,40 @@ pub type Result<T> = result::Result<T, RpcError>;
 
 #[cfg(test)]
 mod tests {
+    use futures::future::pending;
+
     use super::*;
+
+    #[tokio::test]
+    async fn test_task_failed_wraps_join_error() {
+        let handle = tokio::spawn(async {
+            pending::<()>().await;
+        });
+        handle.abort();
+        let join_error = handle.await.unwrap_err();
+
+        let error = RpcError::task_failed("demo task", join_error);
+
+        match error {
+            RpcError::Protocol(ProtocolError::TaskFailed { task, source }) => {
+                assert_eq!(task, "demo task");
+                assert!(source.is_cancelled());
+            }
+            other => panic!("expected task failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resource_already_taken_uses_protocol_error() {
+        let error = RpcError::resource_already_taken("message receiver");
+
+        match error {
+            RpcError::Protocol(ProtocolError::ResourceAlreadyTaken { resource }) => {
+                assert_eq!(resource, "message receiver");
+            }
+            other => panic!("expected resource-taken error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_service_error_round_trip() {

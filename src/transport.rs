@@ -84,7 +84,7 @@ impl ConfiguredListener {
     /// Returns the bound TCP address when this listener has one.
     fn local_addr(&self) -> Result<SocketAddr> {
         self.local_addr
-            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
+            .ok_or_else(|| RpcError::Protocol(ProtocolError::MissingSocketAddr))
     }
 
     /// Splits the configured listener into its runtime pieces.
@@ -205,7 +205,7 @@ where
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.listener
             .as_ref()
-            .ok_or_else(|| RpcError::Protocol("No listener configured".into()))?
+            .ok_or_else(|| RpcError::Protocol(ProtocolError::ListenerNotConfigured))?
             .local_addr()
     }
 
@@ -250,7 +250,7 @@ where
         } = self;
 
         let listener =
-            listener.ok_or_else(|| RpcError::Protocol("No listener configured".into()))?;
+            listener.ok_or_else(|| RpcError::Protocol(ProtocolError::ListenerNotConfigured))?;
         let (listener, local_addr) = listener.into_parts();
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task =
@@ -317,7 +317,7 @@ impl ServerHandle {
     pub async fn join(self) -> Result<()> {
         self.task
             .await
-            .map_err(|e| RpcError::Protocol(e.to_string().into()))?
+            .map_err(|source| RpcError::task_failed("server accept loop", source))?
     }
 
     /// Returns the bound TCP address of the server.
@@ -325,7 +325,7 @@ impl ServerHandle {
     /// This is only valid for TCP listeners; Unix listeners do not have a `SocketAddr`.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.local_addr
-            .ok_or_else(|| RpcError::Protocol("listener has no SocketAddr".into()))
+            .ok_or_else(|| RpcError::Protocol(ProtocolError::MissingSocketAddr))
     }
 }
 
@@ -507,10 +507,10 @@ impl Client {
         let handle = self
             .handle
             .take()
-            .ok_or_else(|| RpcError::Protocol("client handler already taken".into()))?;
+            .ok_or_else(|| RpcError::resource_already_taken("client handler"))?;
         handle
             .await
-            .map_err(|e| RpcError::Protocol(e.to_string().into()))?;
+            .map_err(|source| RpcError::task_failed("client handler", source))?;
         Ok(())
     }
 

@@ -268,9 +268,9 @@ where
     let mut values = params.into_iter();
     let value = values
         .next()
-        .ok_or_else(|| RpcError::Protocol("Expected exactly one parameter".into()))?;
+        .ok_or_else(|| RpcError::Protocol(ProtocolError::ExpectedSingleParameter))?;
     if values.next().is_some() {
-        return Err(RpcError::Protocol("Expected exactly one parameter".into()));
+        return Err(RpcError::Protocol(ProtocolError::ExpectedSingleParameter));
     }
     deserialize_response(&value)
 }
@@ -353,8 +353,8 @@ where
                     match connected_result {
                         Ok(Ok(())) => {}
                         Ok(Err(e)) => return Err(e),
-                        Err(_) => {
-                            return Err(RpcError::Protocol("Connected task failed".into()));
+                        Err(source) => {
+                            return Err(RpcError::task_failed("connected callback", source));
                         }
                     }
                 }
@@ -678,7 +678,7 @@ where
     pub(crate) fn take_receiver(&mut self) -> Result<mpsc::Receiver<Result<Message>>> {
         self.message_receiver
             .take()
-            .ok_or_else(|| RpcError::Protocol("message receiver already taken".into()))
+            .ok_or_else(|| RpcError::resource_already_taken("message receiver"))
     }
 
     /// Handles an incoming response message, routing it to the appropriate pending request.
@@ -754,7 +754,7 @@ fn try_decode_message(buffer: &[u8]) -> Result<Option<(Message, usize)>> {
             Ok(None)
         }
         Err(decode::Error::DepthLimitExceeded) => {
-            Err(RpcError::Protocol("Depth limit exceeded".into()))
+            Err(RpcError::Protocol(ProtocolError::DepthLimitExceeded))
         }
         Err(e) => Err(RpcError::Deserialization(e)),
     }

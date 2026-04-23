@@ -127,7 +127,7 @@ impl Message {
                 Err(RpcError::from(e))
             }
             Err(decode::Error::DepthLimitExceeded) => {
-                Err(RpcError::Protocol("Depth limit exceeded".into()))
+                Err(RpcError::Protocol(ProtocolError::DepthLimitExceeded))
             }
         }
     }
