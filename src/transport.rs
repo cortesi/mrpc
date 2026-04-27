@@ -404,6 +404,11 @@ pub struct Client {
 }
 
 impl Client {
+    /// Returns a sender for issuing RPC requests and notifications.
+    pub fn sender(&self) -> RpcSender {
+        self.sender.clone()
+    }
+
     /// Creates a new client from any bidirectional stream.
     pub async fn from_stream<S, T>(stream: S, service: T) -> Result<Self>
     where
