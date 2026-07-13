@@ -334,6 +334,12 @@ where
             tokio::select! {
                 message_result = receiver.recv() => {
                     match message_result {
+                        Some(Ok(Message::Response(response))) => {
+                            let mut connection = self.connection.lock().await;
+                            if let Err(error) = connection.handle_response(response) {
+                                warn!(%error, "error handling response");
+                            }
+                        }
                         Some(Ok(message)) => {
                             let connection = self.connection.clone();
                             let service = Arc::clone(&self.service);
@@ -827,7 +833,42 @@ fn try_decode_message(buffer: &[u8]) -> Result<Option<(Message, usize)>> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::duplex;
+
     use super::*;
+
+    #[tokio::test]
+    async fn response_is_resolved_before_following_eof() {
+        let (client_stream, server_stream) = duplex(1024);
+        let runtime = ConnectionRuntime::new(client_stream, ());
+        let sender = runtime.sender();
+        let runtime_task = tokio::spawn(runtime.run());
+        let server_task = tokio::spawn(async move {
+            let mut server = RpcConnection::new(server_stream);
+            let mut receiver = server.take_receiver().expect("server message receiver");
+            let Some(Ok(Message::Request(request))) = receiver.recv().await else {
+                panic!("expected client request");
+            };
+            server
+                .write_message(&Message::Response(Response {
+                    id: request.id,
+                    result: Ok(Value::from(42)),
+                }))
+                .await
+                .expect("write response");
+        });
+
+        let response = sender
+            .send_request("answer", &[])
+            .await
+            .expect("response before disconnect");
+        assert_eq!(response, Value::from(42));
+        server_task.await.expect("server task");
+        assert!(matches!(
+            runtime_task.await.expect("runtime task"),
+            Err(RpcError::Disconnect { .. })
+        ));
+    }
 
     #[test]
     fn test_response_from_request_result_preserves_service_errors() {
