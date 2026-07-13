@@ -355,7 +355,9 @@ where
                 });
             }
             Some(joined) = connections.join_next(), if !connections.is_empty() => {
-                if let Err(e) = joined {
+                if let Err(e) = joined
+                    && !e.is_cancelled()
+                {
                     warn!("Error joining connection task: {}", e);
                 }
             }
@@ -364,7 +366,9 @@ where
 
     connections.abort_all();
     while let Some(joined) = connections.join_next().await {
-        if let Err(e) = joined {
+        if let Err(e) = joined
+            && !e.is_cancelled()
+        {
             warn!("Error joining connection task: {}", e);
         }
     }
