@@ -15,6 +15,10 @@ A MessagePack-RPC implementation in Rust.
 - Built on `tokio` for async I/O
 - Uses `rmpv` for MessagePack serialization
 - Optional `serde` feature for typed calls and helpers
+- Managed server and client shutdown with `ServerHandle`, `Client::shutdown`, and `Client::close`
+- Custom asynchronous transports, including in-memory duplex streams
+- Structured service, protocol, connection, and disconnect errors
+- Early request IDs through `RequestHandle` for cancellation and other out-of-band protocols
 
 
 ## Quick Start
