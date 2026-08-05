@@ -25,6 +25,8 @@ use tokio::{
 };
 use tracing::{trace, warn};
 
+#[cfg(feature = "serde")]
+use crate::connection::ServiceCall;
 use crate::{
     Connection, ConnectionMaker, RequestHandle, RpcSender, Value,
     connection::{ConnectionMakerFn, ConnectionRuntime},
@@ -514,10 +516,7 @@ impl Client {
 
     /// Sends a typed request under its declared method.
     #[cfg(feature = "serde")]
-    pub async fn call_service<C: crate::connection::ServiceCall>(
-        &self,
-        req: &C,
-    ) -> Result<C::Response> {
+    pub async fn call_service<C: ServiceCall>(&self, req: &C) -> Result<C::Response> {
         self.sender.call_service(req).await
     }
 
