@@ -18,6 +18,8 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::{Buf, BytesMut};
+#[cfg(feature = "serde")]
+use rmp_serde::decode::Error as RmpSerdeDecodeError;
 use rmpv::{Value, decode};
 #[cfg(feature = "serde")]
 use rmpv::{decode::read_value, encode::write_value};
@@ -314,9 +316,9 @@ where
         many => Value::Map(vec![(tag, Value::Array(many.to_vec()))]),
     };
     match deserialize_response(&tagged) {
-        Err(RpcError::ResponseDeserialization(error)) if is_unknown_variant(&error) => Err(
-            RpcError::Service(crate::error::ServiceError::method_not_found(method)),
-        ),
+        Err(RpcError::ResponseDeserialization(error)) if is_unknown_variant(&error) => {
+            Err(RpcError::Service(ServiceError::method_not_found(method)))
+        }
         other => other,
     }
 }
@@ -326,8 +328,8 @@ where
 ///
 /// Serde reports an unrecognized externally-tagged variant through this
 /// message shape, and the typed-service tests pin it.
-fn is_unknown_variant(error: &rmp_serde::decode::Error) -> bool {
-    matches!(error, rmp_serde::decode::Error::Syntax(message) if message.starts_with("unknown variant"))
+fn is_unknown_variant(error: &RmpSerdeDecodeError) -> bool {
+    matches!(error, RmpSerdeDecodeError::Syntax(message) if message.starts_with("unknown variant"))
 }
 
 /// Handles an RPC connection, processing incoming and outgoing messages.
