@@ -6,12 +6,12 @@
 use async_trait::async_trait;
 use mrpc::{
     Client, Connection, Result, RpcError, RpcSender, Server, ServiceCall, Value, decode_request,
-    serialize_value,
+    encode_request, encode_response, serialize_value,
 };
 use serde::{Deserialize, Serialize};
 
 /// The service's request table. Variant names are the wire methods.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum DemoRequest {
     Ping,
@@ -127,4 +127,36 @@ async fn call_service_round_trips_through_decode_request() {
         .await
         .expect("greet succeeds");
     assert_eq!(greeting, "hello ada");
+}
+
+/// The service's response table, mirrored for payload-only encoding.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DemoResponse {
+    Ping,
+    Greet(String),
+}
+
+#[test]
+fn encode_request_round_trips_through_decode_request() {
+    for request in [
+        DemoRequest::Ping,
+        DemoRequest::Greet(GreetRequest {
+            name: "ada".to_owned(),
+        }),
+        DemoRequest::Add(2, 3),
+    ] {
+        let (method, params) = encode_request(&request).expect("request encodes");
+        let decoded: DemoRequest = decode_request(&method, &params).expect("request decodes");
+        assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn encode_response_strips_the_variant_tag() {
+    let payload = encode_response(&DemoResponse::Greet("hello".to_owned())).expect("encodes");
+    assert_eq!(payload, Value::from("hello"));
+
+    let unit = encode_response(&DemoResponse::Ping).expect("unit encodes");
+    assert_eq!(unit, Value::Nil);
 }

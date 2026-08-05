@@ -13,6 +13,10 @@ use tokio::task::JoinError;
 /// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
+    /// A service value did not encode as a single-tag serde enum.
+    #[error("expected a serde-tagged service enum")]
+    InvalidServiceEnum,
+
     /// Received a value that was not a top-level MessagePack-RPC message array.
     #[error("Invalid message format")]
     InvalidMessageFormat,

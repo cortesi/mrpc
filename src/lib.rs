@@ -30,7 +30,7 @@ pub use connection::{Connection, ConnectionMaker, RequestHandle, RpcSender};
 #[cfg(feature = "serde")]
 pub use connection::{
     ServiceCall, decode_request, deserialize_param, deserialize_params, deserialize_response,
-    serialize_params, serialize_value,
+    encode_request, encode_response, serialize_params, serialize_value,
 };
 pub use error::*;
 pub use message::*;

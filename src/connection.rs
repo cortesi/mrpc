@@ -324,6 +324,57 @@ where
 }
 
 #[cfg(feature = "serde")]
+/// Encodes one serde-tagged service request into a wire method and params.
+///
+/// This is the inverse of [`decode_request`]: the variant name becomes the
+/// method, a unit variant carries no parameter, an array payload becomes the
+/// params array, and any other payload becomes one parameter.
+pub fn encode_request<E>(request: &E) -> Result<(String, Vec<Value>)>
+where
+    E: Serialize,
+{
+    match serialize_value(request)? {
+        Value::String(method) => {
+            let method = method
+                .into_str()
+                .ok_or_else(|| RpcError::Protocol(ProtocolError::InvalidServiceEnum))?;
+            Ok((method, Vec::new()))
+        }
+        Value::Map(mut entries) if entries.len() == 1 => {
+            let (tag, payload) = entries.remove(0);
+            let Value::String(method) = tag else {
+                return Err(RpcError::Protocol(ProtocolError::InvalidServiceEnum));
+            };
+            let method = method
+                .into_str()
+                .ok_or_else(|| RpcError::Protocol(ProtocolError::InvalidServiceEnum))?;
+            let params = match payload {
+                Value::Array(values) => values,
+                value => vec![value],
+            };
+            Ok((method, params))
+        }
+        _ => Err(RpcError::Protocol(ProtocolError::InvalidServiceEnum)),
+    }
+}
+
+#[cfg(feature = "serde")]
+/// Encodes one serde-tagged service response into its untagged payload.
+///
+/// The client decodes the payload against the response type it expects, so
+/// only the variant payload crosses the wire. A unit variant encodes as nil.
+pub fn encode_response<E>(response: &E) -> Result<Value>
+where
+    E: Serialize,
+{
+    match serialize_value(response)? {
+        Value::String(_) => Ok(Value::Nil),
+        Value::Map(mut entries) if entries.len() == 1 => Ok(entries.remove(0).1),
+        _ => Err(RpcError::Protocol(ProtocolError::InvalidServiceEnum)),
+    }
+}
+
+#[cfg(feature = "serde")]
 /// Returns whether a decode failure reports an unknown enum variant.
 ///
 /// Serde reports an unrecognized externally-tagged variant through this
