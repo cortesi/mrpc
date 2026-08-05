@@ -139,6 +139,12 @@ impl RpcSender {
         let params = serialize_params(req)?;
         self.send_notification(method, &params).await
     }
+
+    /// Sends a typed request under its declared method.
+    #[cfg(feature = "serde")]
+    pub async fn call_service<C: ServiceCall>(&self, req: &C) -> Result<C::Response> {
+        self.call(C::METHOD, req).await
+    }
 }
 
 /// Handle to an in-flight RPC request.
@@ -273,6 +279,55 @@ where
         return Err(RpcError::Protocol(ProtocolError::ExpectedSingleParameter));
     }
     deserialize_response(&value)
+}
+
+#[cfg(feature = "serde")]
+/// One typed request with a fixed wire method and response type.
+///
+/// Implement this for each request type of a typed service, then send the
+/// request with `call_service` on a client or an [`RpcSender`]. Pair it with
+/// a serde-tagged request enum and [`decode_request`] on the server side, so
+/// the method-to-type mapping lives once.
+pub trait ServiceCall: Serialize {
+    /// Wire method name.
+    const METHOD: &'static str;
+    /// Response payload type.
+    type Response: DeserializeOwned;
+}
+
+#[cfg(feature = "serde")]
+/// Decodes one wire request into a serde-tagged service enum.
+///
+/// The method name selects the enum variant and the request parameters
+/// become the variant payload: no parameter decodes a unit variant, one
+/// parameter decodes a newtype or struct variant, and several parameters
+/// decode a tuple variant. An unknown method maps to a `MethodNotFound`
+/// service error.
+pub fn decode_request<E>(method: &str, params: &[Value]) -> Result<E>
+where
+    E: DeserializeOwned,
+{
+    let tag = Value::String(method.into());
+    let tagged = match params {
+        [] => tag,
+        [single] => Value::Map(vec![(tag, single.clone())]),
+        many => Value::Map(vec![(tag, Value::Array(many.to_vec()))]),
+    };
+    match deserialize_response(&tagged) {
+        Err(RpcError::ResponseDeserialization(error)) if is_unknown_variant(&error) => Err(
+            RpcError::Service(crate::error::ServiceError::method_not_found(method)),
+        ),
+        other => other,
+    }
+}
+
+#[cfg(feature = "serde")]
+/// Returns whether a decode failure reports an unknown enum variant.
+///
+/// Serde reports an unrecognized externally-tagged variant through this
+/// message shape, and the typed-service tests pin it.
+fn is_unknown_variant(error: &rmp_serde::decode::Error) -> bool {
+    matches!(error, rmp_serde::decode::Error::Syntax(message) if message.starts_with("unknown variant"))
 }
 
 /// Handles an RPC connection, processing incoming and outgoing messages.

@@ -512,6 +512,15 @@ impl Client {
         self.sender.notify(method, req).await
     }
 
+    /// Sends a typed request under its declared method.
+    #[cfg(feature = "serde")]
+    pub async fn call_service<C: crate::connection::ServiceCall>(
+        &self,
+        req: &C,
+    ) -> Result<C::Response> {
+        self.sender.call_service(req).await
+    }
+
     /// Waits for the client handler task to complete.
     pub async fn join(mut self) -> Result<()> {
         let handle = self

@@ -35,6 +35,10 @@ harness = false
 name = "serde_support"
 required-features = ["serde"]
 
+[[test]]
+name = "typed_service"
+required-features = ["serde"]
+
 
 [lints.rust]
 missing_docs = "warn"
