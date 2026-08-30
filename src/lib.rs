@@ -2,11 +2,11 @@
 
 //! MessagePack-RPC implementation in Rust.
 //!
-//! Provides asynchronous RPC servers and clients over TCP and Unix domain sockets.
-//! Implements the full MessagePack-RPC specification.
+//! Provides asynchronous RPC servers and clients over TCP and Unix domain
+//! sockets. Implements the full MessagePack-RPC specification.
 //!
-//! Both servers and clients can handle incoming RPC messages, enabling bidirectional
-//! communication.
+//! Both servers and clients can handle incoming RPC messages, enabling
+//! bidirectional communication.
 //!
 //! To implement a server:
 //! 1. Implement the `Connection` trait

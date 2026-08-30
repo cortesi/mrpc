@@ -75,3 +75,17 @@ too_many_lines = "warn"
 [features]
 default = []
 serde = ["dep:rmp-serde", "dep:serde"]
+
+[workspace.metadata.nanocode]
+schema-version = 1
+requires-nanocode = ">=0.1, <0.2"
+features = "all"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[lib]
+doctest = false

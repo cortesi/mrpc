@@ -167,8 +167,8 @@ impl Drop for UnixListener {
 
 /// RPC server that can listen on TCP or Unix domain sockets.
 ///
-/// The connection type must implement [`Connection`]. A new connection instance is created for
-/// each accepted stream.
+/// The connection type must implement [`Connection`]. A new connection instance
+/// is created for each accepted stream.
 pub struct Server<T>
 where
     T: Connection,
@@ -202,8 +202,8 @@ where
         Self::from_maker(ConnectionMakerFn::new(f))
     }
 
-    /// Returns the bound address of the server. Only valid for TCP listeners that have already
-    /// been bound, otherwise returns an error.
+    /// Returns the bound address of the server. Only valid for TCP listeners
+    /// that have already been bound, otherwise returns an error.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.listener
             .as_ref()
@@ -289,7 +289,8 @@ impl<T> Server<T>
 where
     T: Connection + Default,
 {
-    /// Creates a new server from a listener using `T::default` for each connection.
+    /// Creates a new server from a listener using `T::default` for each
+    /// connection.
     pub fn from_listener<L>(listener: L) -> Result<Self>
     where
         L: Listener,
@@ -324,14 +325,16 @@ impl ServerHandle {
 
     /// Returns the bound TCP address of the server.
     ///
-    /// This is only valid for TCP listeners; Unix listeners do not have a `SocketAddr`.
+    /// This is only valid for TCP listeners; Unix listeners do not have a
+    /// `SocketAddr`.
     pub fn local_addr(&self) -> Result<SocketAddr> {
         self.local_addr
             .ok_or_else(|| RpcError::Protocol(ProtocolError::MissingSocketAddr))
     }
 }
 
-/// Runs an accept loop until shutdown is signalled, cancelling active connection tasks on exit.
+/// Runs an accept loop until shutdown is signalled, cancelling active
+/// connection tasks on exit.
 async fn run_listener<T>(
     listener: Box<dyn Listener<Stream = BoxedStream>>,
     connection_maker: Arc<dyn ConnectionMaker<T> + Send + Sync>,
@@ -479,7 +482,8 @@ impl Client {
         })
     }
 
-    /// Sends an RPC request to the server. Convenience method for `RpcSender::send_request`.
+    /// Sends an RPC request to the server. Convenience method for
+    /// `RpcSender::send_request`.
     pub async fn send_request(&self, method: &str, params: &[Value]) -> Result<Value> {
         self.sender.send_request(method, params).await
     }

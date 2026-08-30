@@ -37,7 +37,8 @@ use crate::{
     message::*,
 };
 
-/// Internal message type for communication between the client API and the connection handler.
+/// Internal message type for communication between the client API and the
+/// connection handler.
 #[derive(Debug)]
 enum ClientMessage {
     /// An RPC request with a response channel.
@@ -180,8 +181,8 @@ impl RequestHandle {
 
 /// Wraps a [`JoinHandle`] and aborts it on drop.
 ///
-/// This keeps spawned tasks from leaking if an async function is cancelled while the task is still
-/// running.
+/// This keeps spawned tasks from leaking if an async function is cancelled
+/// while the task is still running.
 struct AbortOnDrop<T> {
     /// The wrapped task handle.
     handle: JoinHandle<T>,
@@ -227,8 +228,8 @@ where
 #[cfg(feature = "serde")]
 /// Serializes a typed request into a MessagePack-RPC params array.
 ///
-/// If the encoded value is an array, its elements become the params array. Otherwise, the encoded
-/// value is sent as a single parameter.
+/// If the encoded value is an array, its elements become the params array.
+/// Otherwise, the encoded value is sent as a single parameter.
 pub fn serialize_params<Req>(req: &Req) -> Result<Vec<Value>>
 where
     Req: Serialize,
@@ -255,7 +256,8 @@ where
 /// Deserializes a typed request from a MessagePack-RPC params list.
 ///
 /// This is intended for servers implementing [`Connection::handle_request`] or
-/// [`Connection::handle_notification`], where incoming parameters are provided as a `Vec<Value>`.
+/// [`Connection::handle_notification`], where incoming parameters are provided
+/// as a `Vec<Value>`.
 pub fn deserialize_params<Req>(params: Vec<Value>) -> Result<Req>
 where
     Req: DeserializeOwned,
@@ -268,7 +270,8 @@ where
 /// Deserializes a typed request from a single MessagePack-RPC parameter.
 ///
 /// This is intended for servers implementing [`Connection::handle_request`] or
-/// [`Connection::handle_notification`], where incoming parameters are provided as a `Vec<Value>`.
+/// [`Connection::handle_notification`], where incoming parameters are provided
+/// as a `Vec<Value>`.
 pub fn deserialize_param<Req>(params: Vec<Value>) -> Result<Req>
 where
     Req: DeserializeOwned,
@@ -412,7 +415,8 @@ where
         }
     }
 
-    /// Runs the connection handler, processing messages until the connection closes.
+    /// Runs the connection handler, processing messages until the connection
+    /// closes.
     async fn run(&self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
         let rpc_sender_clone = self.rpc_sender.clone();
 
@@ -647,7 +651,8 @@ where
         self.shutdown_tx.clone()
     }
 
-    /// Runs the connection handler until the stream closes or shutdown is requested.
+    /// Runs the connection handler until the stream closes or shutdown is
+    /// requested.
     pub async fn run(self) -> Result<()> {
         let Self {
             handler,
@@ -660,10 +665,12 @@ where
 
 /// A trait for creating connections.
 ///
-/// `ConnectionMaker` provides a generic way to create objects that implement the `Connection` trait.
-/// It is automatically implemented for any type that implements both `Connection` and `Default`.
+/// `ConnectionMaker` provides a generic way to create objects that implement
+/// the `Connection` trait. It is automatically implemented for any type that
+/// implements both `Connection` and `Default`.
 ///
-/// The ConnectionMaker is used to create a new Connection object for each incoming connection.
+/// The ConnectionMaker is used to create a new Connection object for each
+/// incoming connection.
 pub trait ConnectionMaker<T>: Send + Sync
 where
     T: Connection,
@@ -672,7 +679,8 @@ where
     fn make_connection(&self) -> T;
 }
 
-/// A [`ConnectionMaker`] implementation used by [`Server::from_fn`](crate::Server::from_fn).
+/// A [`ConnectionMaker`] implementation used by
+/// [`Server::from_fn`](crate::Server::from_fn).
 pub struct ConnectionMakerFn<F> {
     /// The closure that creates connections.
     make_fn: F,
@@ -704,20 +712,20 @@ where
     }
 }
 
-/// A single Connection in an RPC server or client. For server connections, a new instance of the
-/// Connection is created for each incoming connection. For clients, a single instance is used for
-/// the lifetime of the connection.
+/// A single Connection in an RPC server or client. For server connections, a
+/// new instance of the Connection is created for each incoming connection. For
+/// clients, a single instance is used for the lifetime of the connection.
 ///
-/// As a convenience for clients that don't need to handle requests or responses, the `Connection`
-/// trait is implemented for `()`, and the `Client` type exposes `send_request` and
-/// `send_notification` directly.
+/// As a convenience for clients that don't need to handle requests or
+/// responses, the `Connection` trait is implemented for `()`, and the `Client`
+/// type exposes `send_request` and `send_notification` directly.
 ///
-/// Use the `#[async_trait]` attribute from the `async_trait` crate when implementing this trait to
-/// support async methods.
+/// Use the `#[async_trait]` attribute from the `async_trait` crate when
+/// implementing this trait to support async methods.
 #[async_trait]
 pub trait Connection: Send + Sync + 'static {
-    /// Called after a connection is initiated, either by a `Client` connecting outbound, or an
-    /// incoming connection on a listening `Server`.
+    /// Called after a connection is initiated, either by a `Client` connecting
+    /// outbound, or an incoming connection on a listening `Server`.
     async fn connected(&self, _client: RpcSender) -> Result<()> {
         Ok(())
     }
@@ -755,7 +763,8 @@ pub trait Connection: Send + Sync + 'static {
 
 impl Connection for () {}
 
-/// Low-level RPC connection handler for reading and writing messages over a stream.
+/// Low-level RPC connection handler for reading and writing messages over a
+/// stream.
 #[derive(Debug)]
 struct RpcConnection<S>
 where
@@ -860,7 +869,8 @@ where
             .ok_or_else(|| RpcError::resource_already_taken("message receiver"))
     }
 
-    /// Handles an incoming response message, routing it to the appropriate pending request.
+    /// Handles an incoming response message, routing it to the appropriate
+    /// pending request.
     fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
             // Receiver may be dropped if caller gave up waiting; ignore send errors.
@@ -917,7 +927,8 @@ where
 
 /// Attempts to decode a single message from the beginning of `buffer`.
 ///
-/// Returns `Ok(None)` when `buffer` doesn't contain a full MessagePack value yet.
+/// Returns `Ok(None)` when `buffer` doesn't contain a full MessagePack value
+/// yet.
 fn try_decode_message(buffer: &[u8]) -> Result<Option<(Message, usize)>> {
     let mut cursor = Cursor::new(buffer);
 

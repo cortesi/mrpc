@@ -27,8 +27,8 @@ async fn main() -> Result<()> {
     let addr = server.local_addr().unwrap();
     tokio::spawn(server.run());
 
-    // `Connection` is implemented for (), as a convenience for clients who don't need to handle
-    // requests or responses.
+    // `Connection` is implemented for (), as a convenience for clients who don't
+    // need to handle requests or responses.
     let client = Client::connect_tcp(&addr.to_string(), ()).await?;
     let result = client
         .send_request("echo", &[Value::String("Hello there!".into())])

@@ -1,4 +1,5 @@
-//! Defines the MessagePack-RPC message types and their serialization/deserialization.
+//! Defines the MessagePack-RPC message types and their
+//! serialization/deserialization.
 //!
 //! Includes structures for requests, responses, and notifications, as well as
 //! utilities for encoding and decoding these messages.
@@ -23,7 +24,8 @@ const RESPONSE_MESSAGE: u64 = 1;
 /// Message type identifier for notifications.
 const NOTIFICATION_MESSAGE: u64 = 2;
 
-/// Represents the different types of RPC messages: requests, responses, and notifications.
+/// Represents the different types of RPC messages: requests, responses, and
+/// notifications.
 #[derive(PartialEq, Clone, Debug)]
 pub enum Message {
     /// An RPC request.
@@ -112,14 +114,16 @@ impl Message {
         }
     }
 
-    /// Encodes the message to MessagePack format and writes it to the given writer.
+    /// Encodes the message to MessagePack format and writes it to the given
+    /// writer.
     pub fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {
         let value = self.to_value();
         write_value(writer, &value)?;
         Ok(())
     }
 
-    /// Reads and decodes a message from MessagePack format using the given reader.
+    /// Reads and decodes a message from MessagePack format using the given
+    /// reader.
     pub fn decode<R: Read>(reader: &mut R) -> Result<Self> {
         match read_value(reader) {
             Ok(value) => Self::from_value(value),
@@ -213,7 +217,8 @@ fn parse_params(value: &Value, context: &'static str) -> Result<Vec<Value>> {
     }
 }
 
-/// Parses a wire message id and rejects values that exceed the public `u32` range.
+/// Parses a wire message id and rejects values that exceed the public `u32`
+/// range.
 fn parse_message_id(value: &Value, context: &'static str) -> Result<u32> {
     let raw_id = value.as_u64().ok_or_else(|| {
         RpcError::Protocol(ProtocolError::InvalidMessageField {

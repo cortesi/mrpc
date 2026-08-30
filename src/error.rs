@@ -10,7 +10,8 @@ use rmpv::{Value, decode::Error as RmpvDecodeError, encode::Error as RmpvEncodeE
 use thiserror::Error;
 use tokio::task::JoinError;
 
-/// Errors indicating a violation of the MessagePack-RPC protocol or message framing.
+/// Errors indicating a violation of the MessagePack-RPC protocol or message
+/// framing.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
     /// A service value did not encode as a single-tag serde enum.
@@ -49,7 +50,8 @@ pub enum ProtocolError {
     #[error("Depth limit exceeded")]
     DepthLimitExceeded,
 
-    /// A caller requested a bound socket address before any listener was configured.
+    /// A caller requested a bound socket address before any listener was
+    /// configured.
     #[error("No listener configured")]
     ListenerNotConfigured,
 
@@ -154,10 +156,11 @@ pub enum RpcError {
 
 /// An error that occurred during the execution of an RPC service method.
 ///
-/// It consists of a name, which identifies the type of error, and a value, which can contain
-/// additional error details. This error type is used to convey service-specific errors back to the
-/// client. When sent over the RPC protocol, this error will be serialized into a map with "name"
-/// and "value" keys.
+/// It consists of a name, which identifies the type of error, and a value,
+/// which can contain additional error details. This error type is used to
+/// convey service-specific errors back to the client. When sent over the RPC
+/// protocol, this error will be serialized into a map with "name" and "value"
+/// keys.
 #[derive(Error, Debug)]
 pub struct ServiceError {
     /// The error type name.
