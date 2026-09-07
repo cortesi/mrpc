@@ -80,6 +80,7 @@ serde = ["dep:rmp-serde", "dep:serde"]
 schema-version = 1
 requires-nanocode = ">=0.1, <0.2"
 features = "all"
+cargo-release = "mrpc"
 
 [profile.dev]
 debug = "line-tables-only"
