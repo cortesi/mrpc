@@ -420,7 +420,8 @@ where
     async fn run(&self, client_receiver: mpsc::Receiver<ClientMessage>) -> Result<()> {
         let rpc_sender_clone = self.rpc_sender.clone();
 
-        // Run the connected handler concurrently so it can send messages immediately.
+        // Run the connected handler concurrently so it can send messages
+        // immediately.
         let service = Arc::clone(&self.service);
         let mut connected_task = AbortOnDrop::new(tokio::spawn(async move {
             service.connected(rpc_sender_clone).await
@@ -810,7 +811,8 @@ where
                         }
                     }
                     Ok(None) if eof => {
-                        // Receiver dropped means handler exited; ignore send errors.
+                        // Receiver dropped means handler exited; ignore send
+                        // errors.
                         drop(
                             message_sender
                                 .send(Err(RpcError::Disconnect { source: None }))
@@ -833,14 +835,16 @@ where
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                // Receiver dropped means handler exited; ignore send errors.
+                                // Receiver dropped means handler exited; ignore
+                                // send errors.
                                 drop(message_sender.send(Err(RpcError::from(e))).await);
                                 break;
                             }
                         }
                     }
                     Err(e) => {
-                        // Receiver dropped means handler exited; ignore send errors.
+                        // Receiver dropped means handler exited; ignore send
+                        // errors.
                         drop(message_sender.send(Err(e)).await);
                         break;
                     }
@@ -873,7 +877,8 @@ where
     /// pending request.
     fn handle_response(&mut self, response: Response) -> Result<()> {
         if let Some(sender) = self.pending_requests.remove(&response.id) {
-            // Receiver may be dropped if caller gave up waiting; ignore send errors.
+            // Receiver may be dropped if caller gave up waiting; ignore send
+            // errors.
             drop(sender.send(response.result.map_err(RpcError::from_remote_error_value)));
             Ok(())
         } else {

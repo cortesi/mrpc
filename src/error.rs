@@ -112,7 +112,7 @@ pub enum RpcError {
     Io(io::Error),
 
     /// Error occurred while trying to establish a connection.
-    #[error("Connection failed")]
+    #[error("Connection failed: {source}")]
     Connect {
         /// Underlying I/O error.
         #[source]
@@ -279,6 +279,18 @@ mod tests {
     use futures::future::pending;
 
     use super::*;
+
+    #[test]
+    fn connection_failure_reports_its_io_source() {
+        let error = RpcError::Connect {
+            source: io::Error::new(ErrorKind::ConnectionRefused, "control socket refused"),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Connection failed: control socket refused"
+        );
+    }
 
     #[tokio::test]
     async fn test_task_failed_wraps_join_error() {

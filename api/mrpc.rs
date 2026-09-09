@@ -97,7 +97,7 @@ pub mod mrpc {
         #[error("I/O error: {0}")]
         /// Error occurred during I/O operations.
         Io(io::Error),
-        #[error("Connection failed")]
+        #[error("Connection failed: {source}")]
         /// Error occurred while trying to establish a connection.
         Connect {
             #[source]
